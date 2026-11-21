@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Finding, Report } from './main'
 
 type RunEntry = {
@@ -10,10 +10,11 @@ type SavedRun = RunEntry & {
   nodes: Record<string, { kind: string; status: string; detail: string }>
 }
 type Difference = { added: Finding[]; removed: Finding[]; unchanged: Finding[] }
+type DemoComparison = { before: string; after: string; difference: Difference }
 const statusLabels: Record<string, string> = { done: 'Завершено', error: 'Ошибка', skipped: 'Пропущено' }
 
-async function request<T>(url: string, method = 'GET'): Promise<T> {
-  const response = await fetch(url, { method, signal: AbortSignal.timeout(8000) })
+async function request<T>(url: string, method = 'GET', timeout = 8000): Promise<T> {
+  const response = await fetch(url, { method, signal: AbortSignal.timeout(timeout) })
   const data = await response.json()
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось открыть историю.')
   return data
@@ -33,6 +34,10 @@ export function History({ revision, disabled, onOpen }: {
   const [difference, setDifference] = useState<Difference | null>(null)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [demoPending, setDemoPending] = useState(false)
+  const [demoRevision, setDemoRevision] = useState(0)
+  const comparisonHeading = useRef<HTMLHeadingElement>(null)
+  const historyLocked = disabled || pending || demoPending
 
   useEffect(() => {
     let keep = true
@@ -41,7 +46,11 @@ export function History({ revision, disabled, onOpen }: {
       problem => { if (keep) setError(problem.message) },
     )
     return () => { keep = false }
-  }, [revision])
+  }, [revision, demoRevision])
+
+  useEffect(() => {
+    if (demoRevision) comparisonHeading.current?.focus()
+  }, [demoRevision])
 
   async function open(id: string) {
     setPending(true)
@@ -75,15 +84,38 @@ export function History({ revision, disabled, onOpen }: {
     }
   }
 
+  async function compareDemo() {
+    setDemoPending(true)
+    setError('')
+    setDifference(null)
+    try {
+      const demo = await request<DemoComparison>('/api/workflow/demo-comparison', 'POST', 20000)
+      setBefore(demo.before)
+      setAfter(demo.after)
+      setDifference(demo.difference)
+      setDemoRevision(revision => revision + 1)
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : 'Не удалось сравнить демо.')
+    } finally {
+      setDemoPending(false)
+    }
+  }
+
   return <section className="panel" aria-labelledby="history">
-    <div className="results-title"><h2 id="history">История запусков</h2></div>
+    <div className="results-title">
+      <h2 id="history">История запусков</h2>
+      <button type="button" className="secondary" disabled={historyLocked} onClick={() => void compareDemo()}>
+        Сравнить демо в один клик
+      </button>
+    </div>
+    {demoPending && <p className="summary-note status" role="status"><span className="spinner" aria-hidden="true" />Проверяем две версии Demo Desk…</p>}
     {error && <p className="empty alert" role="alert">{error}</p>}
     {!runs.length ? <p className="empty">Завершённые запуски появятся здесь.</p> : <div className="table-wrap"><table>
       <thead><tr><th>Время</th><th>Учебная цель</th><th>Анализаторы</th><th>Статус</th><th>Находки</th><th>Отчёт</th></tr></thead>
       <tbody>{runs.map(run => <tr key={run.id}>
         <td>{stamp(run)}</td><td>{run.source}</td><td>{run.analyzers.map(name => name.toUpperCase()).join(', ') || '—'}</td>
         <td>{statusLabels[run.status]}</td><td>{run.count ?? '—'}</td>
-        <td><button className="secondary" type="button" disabled={disabled || pending} onClick={() => void open(run.id)}>
+        <td><button className="secondary" type="button" disabled={historyLocked} onClick={() => void open(run.id)}>
           {run.count === null ? 'Открыть статусы' : 'Открыть отчёт'}
         </button></td>
       </tr>)}</tbody>
@@ -94,24 +126,24 @@ export function History({ revision, disabled, onOpen }: {
         {id === node.kind ? id : `${node.kind} (${id})`} · {statusLabels[node.status] ?? node.status}{node.detail ? ` · ${node.detail}` : ''}
       </li>)}</ul>
     </div>}
-    {runs.some(run => run.comparable) && <div className="history-detail">
-      <h3>Сравнение отчётов</h3>
+    {(difference || runs.some(run => run.comparable)) && <div className="history-detail">
+      <h3 ref={comparisonHeading} tabIndex={-1}>Сравнение отчётов</h3>
       <div className="history-controls">
-        <label>Предыдущий запуск <select value={before} disabled={pending} onChange={event => {
+        <label>Предыдущий запуск <select value={before} disabled={historyLocked} onChange={event => {
           setBefore(event.target.value); setAfter(''); setDifference(null)
         }}>
           <option value="">Выберите запуск</option>
           {runs.filter(run => run.comparable).map(run => <option value={run.id} key={run.id}>{run.source} · {stamp(run)}</option>)}
         </select></label>
-        <label>Новый запуск <select value={after} disabled={pending || !candidates.length} onChange={event => {
+        <label>Новый запуск <select value={after} disabled={historyLocked || !candidates.length} onChange={event => {
           setAfter(event.target.value); setDifference(null)
         }}>
           <option value="">Выберите запуск</option>
           {candidates.map(run => <option value={run.id} key={run.id}>{run.source} · {stamp(run)}</option>)}
         </select></label>
-        <button className="secondary" type="button" disabled={pending || !before || !after} onClick={() => void compare()}>Сравнить</button>
+        <button className="secondary" type="button" disabled={historyLocked || !previous || !candidates.some(run => run.id === after)} onClick={() => void compare()}>Сравнить</button>
       </div>
-      {before && !candidates.length && <p>Более позднего отчёта с той же целью и теми же анализаторами пока нет.</p>}
+      {previous && !candidates.length && <p>Более позднего отчёта с той же целью и теми же анализаторами пока нет.</p>}
       {difference && <div className="history-difference">{([
         ['added', 'Новые'], ['removed', 'Исчезнувшие'], ['unchanged', 'Сохранившиеся'],
       ] as const).map(([key, label]) => <details key={key} open={key !== 'unchanged'}>

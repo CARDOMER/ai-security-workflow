@@ -2,6 +2,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -67,6 +68,19 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual({key: len(items) for key, items in result.json().items()},
                          {"added": 0, "removed": 2, "unchanged": 1})
+
+    def test_one_click_demo_saves_and_compares_two_new_runs(self):
+        with patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1"}):
+            client = self.client()
+            response = client.post("/api/workflow/demo-comparison")
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual({key: len(items) for key, items in result["difference"].items()},
+                         {"added": 0, "removed": 2, "unchanged": 1})
+        runs = client.get("/api/workflow/history").json()
+        self.assertEqual([run["id"] for run in runs], [result["after"], result["before"]])
+        self.assertEqual([run["count"] for run in runs], [1, 3])
+        self.assertTrue(all(run["source"] == "Demo Desk" for run in runs))
 
     def test_rejects_changed_analyzer_set_and_other_target(self):
         client = self.client()

@@ -129,11 +129,13 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     deliveries = OrderedDict()
     scheduled = None
     public_demo = getenv("WORKFLOW_PUBLIC_DEMO") == "1"
-    if public_demo:
-        demo_directory = root.parents[1] / "demo"
-        for filename in DEMO_ARCHIVES:
-            data = (demo_directory / filename).read_bytes()
-            uploads[sha256(data).hexdigest()[:32]] = data
+    demo_archives = {}
+    demo_directory = Path(__file__).resolve().parents[1] / "demo"
+    for filename in DEMO_ARCHIVES:
+        path = demo_directory / filename
+        if path.is_file():
+            data = path.read_bytes()
+            demo_archives[sha256(data).hexdigest()[:32]] = data
     history = RunHistory(history_path or Path(getenv(
         "WORKFLOW_HISTORY_DB", str(root.parents[1] / "workflow-history.sqlite3"),
     )))
@@ -150,7 +152,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         archive = bytes(data)
         if public_demo:
             project = sha256(archive).hexdigest()[:32]
-            if uploads.get(project) != archive:
+            if demo_archives.get(project) != archive:
                 raise HTTPException(422, "В публичном демо доступны только два учебных ZIP из комплекта.")
             return {"uploadId": project}
 
@@ -291,8 +293,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             update(run, historyError="Локальная история недоступна. Скачайте отчёт до закрытия страницы.")
         update(run, status=status)
 
-    @router.post("/runs", status_code=202)
-    def start(graph: Workflow):
+    def start(graph: Workflow, *, wait=False):
         nonlocal scheduled
         if public_demo and graph.uploadId:
             graph = graph.model_copy(update={"projectLabel": "Demo Desk"})
@@ -314,9 +315,9 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             "events": [{"nodeId": node.id, "status": "waiting", "detail": ""} for node in ordered],
         }
         with lock:
-            if graph.uploadId and graph.uploadId not in uploads:
+            archive = demo_archives.get(graph.uploadId, uploads.get(graph.uploadId))
+            if graph.uploadId and archive is None:
                 raise HTTPException(404, "Загрузите ZIP повторно.")
-            archive = uploads.get(graph.uploadId)
             running = {"queued", "running", "scheduled"}
             if sum(item["status"] in running for item in runs.values()) >= 4:
                 raise HTTPException(429, "Слишком много текущих запусков.")
@@ -331,13 +332,22 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                 scheduled = run["id"]
         provider = None if public_demo else get_summary_provider()
         args = (graph, ordered, inbound, run, archive, provider)
-        if delay:
+        if wait:
+            execute(*args)
+            if run["status"] != "done" or run.get("historyError"):
+                raise HTTPException(503, "Не удалось сохранить полный отчёт демонстрационного запуска.")
+        elif delay:
             worker = Timer(delay, execute, args=args)
             worker.daemon = True
+            worker.start()
         else:
             worker = Thread(target=execute, args=args, daemon=True)
-        worker.start()
+            worker.start()
         return {"id": run["id"]}
+
+    @router.post("/runs", status_code=202)
+    def start_run(graph: Workflow):
+        return start(graph)
 
     @router.get("/runs/{run_id}")
     def result(run_id: str):
@@ -376,6 +386,23 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             return compare_runs(previous, current)
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
+
+    @router.post("/demo-comparison")
+    def compare_demo():
+        if len(demo_archives) != len(DEMO_ARCHIVES):
+            raise HTTPException(503, "Демонстрационные архивы недоступны.")
+        analyzers = sorted(ANALYSIS)
+        nodes = [Step(id=kind, kind=kind) for kind in ("manual", "source", *analyzers, "merge", "report")]
+        edges = [
+            Link(source="manual", target="source"), Link(source="merge", target="report"),
+            *(Link(source="source", target=kind) for kind in analyzers),
+            *(Link(source=kind, target="merge") for kind in analyzers),
+        ]
+        before, after = (
+            start(Workflow(nodes=nodes, edges=edges, uploadId=upload_id, projectLabel="Demo Desk"), wait=True)["id"]
+            for upload_id in demo_archives
+        )
+        return {"before": before, "after": after, "difference": compare(before, after)}
 
     class Delivery(Input):
         runId: str = Field(pattern=r"^[a-f0-9]{32}$")
