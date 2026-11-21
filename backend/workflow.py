@@ -1,6 +1,7 @@
 from collections import Counter, OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from hashlib import sha256
 from os import getenv
 from pathlib import Path
 from sqlite3 import Error as DatabaseError
@@ -27,6 +28,7 @@ class Input(BaseModel):
 Kind = Literal["manual", "schedule", "source", "secret", "sca", "sast", "merge", "condition", "report", "ai", "webhook"]
 TRIGGERS = {"manual", "schedule"}
 ANALYSIS = {"secret", "sca", "sast"}
+DEMO_ARCHIVES = ("check-before.zip", "check-after.zip")
 CONNECTIONS = {
     "manual": {"source"}, "schedule": {"source"}, "source": ANALYSIS,
     **{kind: {"merge"} for kind in ANALYSIS},
@@ -126,6 +128,12 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     uploads = OrderedDict()
     deliveries = OrderedDict()
     scheduled = None
+    public_demo = getenv("WORKFLOW_PUBLIC_DEMO") == "1"
+    if public_demo:
+        demo_directory = root.parents[1] / "demo"
+        for filename in DEMO_ARCHIVES:
+            data = (demo_directory / filename).read_bytes()
+            uploads[sha256(data).hexdigest()[:32]] = data
     history = RunHistory(history_path or Path(getenv(
         "WORKFLOW_HISTORY_DB", str(root.parents[1] / "workflow-history.sqlite3"),
     )))
@@ -140,6 +148,12 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                 raise HTTPException(413, "Допустим ZIP размером до 8 МБ.")
             data.extend(chunk)
         archive = bytes(data)
+        if public_demo:
+            project = sha256(archive).hexdigest()[:32]
+            if uploads.get(project) != archive:
+                raise HTTPException(422, "В публичном демо доступны только два учебных ZIP из комплекта.")
+            return {"uploadId": project}
+
         def validate():
             with training_zip(archive):
                 pass
@@ -280,6 +294,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     @router.post("/runs", status_code=202)
     def start(graph: Workflow):
         nonlocal scheduled
+        if public_demo and graph.uploadId:
+            graph = graph.model_copy(update={"projectLabel": "Demo Desk"})
         try:
             ordered, inbound = ordered_steps(graph)
         except ValueError as error:
@@ -313,7 +329,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             runs[run["id"]] = run
             if delay:
                 scheduled = run["id"]
-        provider = get_summary_provider()
+        provider = None if public_demo else get_summary_provider()
         args = (graph, ordered, inbound, run, archive, provider)
         if delay:
             worker = Timer(delay, execute, args=args)

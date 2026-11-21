@@ -5,6 +5,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
+const publicDemo = import.meta.env.VITE_PUBLIC_DEMO === '1'
+
 const names = {
   manual: 'Ручной запуск', schedule: 'Расписание', source: 'Учебный проект',
   secret: 'Secrets Scanner', sca: 'Maven SCA', sast: 'Kotlin SAST', merge: 'Объединение',
@@ -285,11 +287,16 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
         setUploadError('')
         onEdit()
       }}>Вернуть Repair Desk</button>}
-      {upload && <label>Имя учебной цели для сравнения
+      {upload && !publicDemo && <label>Имя учебной цели для сравнения
         <input value={projectLabel} maxLength={60} disabled={locked} placeholder="Одинаковое имя для двух версий"
           onChange={event => { setProjectLabel(event.target.value); onEdit() }} />
       </label>}
     </div>
+    {publicDemo && <div className="workflow-options demo-downloads">
+      <span>Архивы Demo Desk для сравнения</span>
+      <a href="/demo/check-before.zip" download>Скачать ZIP до исправлений</a>
+      <a href="/demo/check-after.zip" download>Скачать ZIP после исправлений</a>
+    </div>}
     {uploadError && <p className="workflow-error alert" role="alert">{uploadError}</p>}
     <div className="workflow-canvas">
       <ReactFlow colorMode={theme} nodes={nodes.map(item => ({ ...item, data: { ...item.data, progress: progress[item.id] } }))}

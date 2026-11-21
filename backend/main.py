@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from hmac import compare_digest
+from os import getenv
 from pathlib import Path
 import re
 from typing import Annotated, Protocol
@@ -78,7 +79,7 @@ def summarize_report(
     metadata = report_metadata(report.findings)
     if not compare_digest(signature, sign_metadata(metadata)):
         raise HTTPException(422, "Отчёт изменился или устарел. Запустите проверку ещё раз.")
-    return summarize_metadata(metadata, provider)
+    return summarize_metadata(metadata, None if getenv("WORKFLOW_PUBLIC_DEMO") == "1" else provider)
 
 
 ADVISORY = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b", re.I)

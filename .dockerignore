@@ -1,0 +1,15 @@
+*
+!backend/
+!backend/*.py
+!backend/requirements.txt
+!demo/
+!demo/check-before.zip
+!demo/check-after.zip
+!frontend/
+!frontend/index.html
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/src/
+!frontend/src/**
+!frontend/tsconfig.json
+!frontend/vite.config.ts
