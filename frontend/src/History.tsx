@@ -27,7 +27,8 @@ function stamp(run: RunEntry) {
 }
 
 export function History({ revision, disabled, onOpen }: {
-  revision: number; disabled: boolean; onOpen: (report: Report | null, source: string, summary?: Summary | null) => void
+  revision: number; disabled: boolean
+  onOpen: (report: Report | null, source: string, summary: Summary | null | undefined, runId?: string) => void
 }) {
   const [runs, setRuns] = useState<RunEntry[]>([])
   const [selected, setSelected] = useState<SavedRun | null>(null)
@@ -60,7 +61,7 @@ export function History({ revision, disabled, onOpen }: {
     try {
       const run = await request<SavedRun>(`/api/workflow/history/${id}`)
       setSelected(run)
-      onOpen(run.report, run.source, run.summary)
+      onOpen(run.report, run.source, run.summary, run.status === 'running' ? undefined : run.id)
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : 'Не удалось открыть отчёт.')
     } finally {

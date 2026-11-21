@@ -80,7 +80,7 @@ function App() {
       return 'dark'
     }
   })
-  const [result, setResult] = useState<{ report: Report; signature: string } | null>(null)
+  const [result, setResult] = useState<{ report: Report; signature: string; runId?: string } | null>(null)
   const report = result?.report
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -119,7 +119,7 @@ function App() {
         }))
         if (controller.signal.aborted) return
         if (!saved.report) throw new Error('У этого запуска нет сохранённого отчёта.')
-        setResult({ report: saved.report, signature: '' })
+        setResult({ report: saved.report, signature: '', runId: saved.status === 'running' ? undefined : saved.id })
         setSavedSource(saved.source)
         setSavedSummary(saved.summary ?? null)
       } catch (problem) {
@@ -160,7 +160,7 @@ function App() {
         setRun(snapshot)
         if (!shownReport && snapshot.report && snapshot.signature) {
           shownReport = true
-          setResult({ report: snapshot.report, signature: snapshot.signature })
+          setResult({ report: snapshot.report, signature: snapshot.signature, runId: id })
         }
         if (snapshot.status === 'done' || snapshot.status === 'error') {
           if (snapshot.status === 'error') setError('Сценарий завершился с ошибкой. Проверьте статусы нод.')
@@ -226,7 +226,9 @@ function App() {
           {run?.historyError && <p className="workflow-error alert" role="alert">{run.historyError}</p>}
         </section>
         <section className="panel results" aria-labelledby="results" aria-busy={busy && !report}>
-          {result ? <ReportActions report={result.report} signature={result.signature} onDownload={downloadReport} workflowSummary={savedSummary ?? run?.summary} />
+          {result ? <ReportActions key={result.runId ?? result.signature} report={result.report} signature={result.signature}
+            runId={run?.historyError ? undefined : result.runId} busy={busy} onDownload={downloadReport}
+            workflowSummary={savedSummary ?? run?.summary} />
             : <div className="results-title"><h2 id="results">Результаты</h2></div>}
           {savedSource && <p className="history-context">Сохранённый отчёт · {savedSource}</p>}
           {!error && !report?.findings.length && <p className="empty">
@@ -250,10 +252,10 @@ function App() {
             })}</tbody>
           </table></div>}
         </section>
-        <History revision={historyRevision} disabled={busy} onOpen={(saved, source, summary) => {
+        <History revision={historyRevision} disabled={busy} onOpen={(saved, source, summary, runId) => {
           if (!saved || busy) return
           clearRun()
-          setResult({ report: saved, signature: '' })
+          setResult({ report: saved, signature: '', runId })
           setSavedSource(source)
           setSavedSummary(summary ?? null)
         }} />

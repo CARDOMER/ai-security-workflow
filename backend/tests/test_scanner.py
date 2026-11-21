@@ -33,6 +33,7 @@ class ScannerTests(unittest.TestCase):
     def test_new_files_are_scanned_and_controls_are_ignored(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "build.gradle.kts").touch()
             file = root / "custom.yml"
             value = "completely-new-fixture-value"
             file.write_text(
@@ -53,6 +54,7 @@ class ScannerTests(unittest.TestCase):
     def test_composition_requires_authorization_context(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "build.gradle.kts").touch()
             source = root / "Fixture.kt"
             code = '\n'.join([
                 'val first = "synthetic-first"',

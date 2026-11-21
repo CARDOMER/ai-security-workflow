@@ -144,11 +144,13 @@ class GraphTests(unittest.TestCase):
         condition = Step(id="condition", kind="condition", metric="path", pattern="^match")
         self.assertTrue(condition_matches(condition, paths))
 
-    def test_missing_builtin_project_cannot_produce_a_clean_report(self):
+    def test_empty_builtin_project_cannot_produce_a_clean_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            empty = root / "empty"
+            empty.mkdir()
             app = FastAPI()
-            app.include_router(make_workflow_router(root / "missing", ANALYZERS, summarize_metadata,
+            app.include_router(make_workflow_router(empty, ANALYZERS, summarize_metadata,
                                                     root / "history.sqlite3"))
             with TestClient(app) as client:
                 self.client = client
@@ -160,10 +162,24 @@ class GraphTests(unittest.TestCase):
             self.assertNotIn("report", result)
             self.assertFalse(saved["comparable"])
 
+    def test_demo_webhook_acknowledges_actual_workflow_delivery(self):
+        def local_delivery(_url, *, json, headers, **_options):
+            return self.client.post("/api/workflow/demo-webhook", json=json, headers=headers)
+
+        with (
+            patch.dict("os.environ", {"WORKFLOW_WEBHOOK_URL": "http://127.0.0.1:8000/api/workflow/demo-webhook"}),
+            patch("backend.workflow.get_summary_provider", return_value=None),
+            patch("backend.workflow.httpx.post", side_effect=local_delivery),
+        ):
+            run = self.start(graph())
+            result = self.wait(run)
+        self.assertEqual(result["nodes"]["webhook"]["output"]["httpStatus"], 202)
+        self.assertEqual(result["delivery"]["runId"], run)
+
     def test_webhook_labels_an_incomplete_report(self):
         payload = graph()
         payload["nodes"][-3].update(severity="HIGH")
-        response = httpx.Response(202, request=httpx.Request("POST", "http://127.0.0.1/"))
+        response = httpx.Response(202, json={"accepted": True}, request=httpx.Request("POST", "http://127.0.0.1/"))
         with patch.object(ANALYZERS["sca"], "scan", side_effect=OSError), \
              patch("backend.workflow.get_summary_provider", return_value=None), \
              patch("backend.workflow.httpx.post", return_value=response) as delivery:
@@ -182,7 +198,7 @@ class GraphTests(unittest.TestCase):
         def delivery(_url, *, json, **_options):
             stored = self.client.get(f"/api/workflow/history/{json['runId']}").json()
             captured.append((json, stored))
-            return httpx.Response(202, request=httpx.Request("POST", "http://127.0.0.1/"))
+            return httpx.Response(202, json={"accepted": True}, request=httpx.Request("POST", "http://127.0.0.1/"))
 
         with patch.dict("os.environ", {"WORKFLOW_UI_URL": "https://example.test"}), \
              patch("backend.workflow.get_summary_provider", return_value=None), \
@@ -201,7 +217,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(final["status"], "done")
 
     def test_history_failure_explains_missing_report_link(self):
-        response = httpx.Response(202, request=httpx.Request("POST", "http://127.0.0.1/"))
+        response = httpx.Response(202, json={"accepted": True}, request=httpx.Request("POST", "http://127.0.0.1/"))
         with patch.dict("os.environ", {"WORKFLOW_UI_URL": "https://example.test"}), \
              patch("backend.workflow.RunHistory.save", side_effect=OSError), \
              patch("backend.workflow.httpx.post", return_value=response) as delivery:

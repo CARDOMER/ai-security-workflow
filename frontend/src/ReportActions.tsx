@@ -3,9 +3,12 @@ import { useEffect, useRef, useState } from 'react'
 type Priority = { action: string; reason: string; findingIds: number[] }
 export type Summary = { mode: 'llm' | 'rules'; provider?: 'gigachat' | 'yandex'; fallbackReason?: string; summary: string; priorities: Priority[] }
 const providerTitles = { gigachat: 'Рекомендации GigaChat', yandex: 'Рекомендации YandexGPT' }
-type Props = { report: { findings: unknown[] }; signature: string; onDownload: () => void; workflowSummary?: Summary }
+type Props = {
+  report: { findings: unknown[] }; signature: string; runId?: string; busy: boolean
+  onDownload: () => void; workflowSummary?: Summary
+}
 
-export function ReportActions({ report, signature, onDownload, workflowSummary }: Props) {
+export function ReportActions({ report, signature, runId, busy, onDownload, workflowSummary }: Props) {
   const [manualSummary, setSummary] = useState<Summary | null>(null)
   const summary = manualSummary ?? workflowSummary
   const [pending, setPending] = useState(false)
@@ -15,17 +18,20 @@ export function ReportActions({ report, signature, onDownload, workflowSummary }
   useEffect(() => () => request.current?.abort(), [report])
 
   async function prepare() {
-    if (request.current) return
+    if (request.current || busy) return
     const controller = new AbortController()
     request.current = controller
     setSummary(null)
     setError('')
     setPending(true)
     try {
-      const response = await fetch('/api/report/summary', {
+      const url = runId ? `/api/workflow/history/${runId}/summary` : '/api/report/summary'
+      const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Report-Signature': signature },
-        body: JSON.stringify(report),
+        ...(!runId ? {
+          headers: { 'Content-Type': 'application/json', 'X-Report-Signature': signature },
+          body: JSON.stringify(report),
+        } : {}),
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]),
       })
       const data = await response.json()
@@ -53,8 +59,8 @@ export function ReportActions({ report, signature, onDownload, workflowSummary }
         <h2 id="results">Результаты <span className="count">{report.findings.length}</span></h2>
         <div className="report-buttons">
           <button className="secondary" type="button" onClick={onDownload}>Скачать JSON</button>
-          {!!report.findings.length && signature && (
-            <button className="secondary" type="button" onClick={prepare} disabled={pending || !signature}>
+          {!!report.findings.length && (signature || runId) && (
+            <button className="secondary" type="button" onClick={prepare} disabled={pending || busy}>
               Подготовить рекомендации
             </button>
           )}

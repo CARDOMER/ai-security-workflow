@@ -2,8 +2,10 @@ from collections import Counter, OrderedDict
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
+from hmac import compare_digest
 from os import getenv
 from pathlib import Path
+from secrets import token_urlsafe
 from sqlite3 import Error as DatabaseError
 from threading import Lock, Thread, Timer
 from time import monotonic
@@ -18,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.archive import MAX_UPLOAD, training_zip
 from backend.history import RunHistory, compare_runs
-from backend.notifications import report_address, send_telegram
+from backend.notifications import DEMO_WEBHOOK_HEADER, is_local_demo_webhook, report_address, send_telegram
 from backend.summary import SEVERITY_ORDER, get_summary_provider, report_metadata, sign_metadata
 
 
@@ -141,7 +143,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     lock = Lock()
     runs = OrderedDict()
     uploads = OrderedDict()
-    deliveries = OrderedDict()
+    webhook_secret = token_urlsafe(32)
     scheduled = None
     public_demo = getenv("WORKFLOW_PUBLIC_DEMO") == "1"
     demo_archives = {}
@@ -235,7 +237,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
 
         update(run, status="running")
         try:
-            if archive is None and not root.is_dir():
+            if archive is None and not (root / "build.gradle.kts").is_file():
                 raise ValueError("Учебный проект отсутствует.")
             with (nullcontext(root) if archive is None else training_zip(archive)) as project:
                 for node in ordered:
@@ -312,12 +314,19 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                             if summary is not None:
                                 payload["recommendations"] = summary["priorities"]
                             if node.kind == "webhook":
+                                destination = getenv("WORKFLOW_WEBHOOK_URL", "http://127.0.0.1:8000/api/workflow/demo-webhook")
+                                internal = is_local_demo_webhook(destination)
                                 response = httpx.post(
-                                    getenv("WORKFLOW_WEBHOOK_URL", "http://127.0.0.1:8000/api/workflow/demo-webhook"),
+                                    destination,
                                     json=payload, timeout=5, follow_redirects=False,
+                                    **({"headers": {DEMO_WEBHOOK_HEADER: webhook_secret}, "trust_env": False} if internal else {}),
                                 )
                                 response.raise_for_status()
                                 http_status = response.status_code
+                                if internal:
+                                    if http_status != 202 or response.json().get("accepted") is not True:
+                                        raise ValueError("Unexpected demo webhook acknowledgment")
+                                    update(run, delivery=payload)
                             else:
                                 http_status = send_telegram(payload)
                             detail = f"Доставлено, HTTP {http_status}"
@@ -387,7 +396,6 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             if len(runs) >= 24:
                 oldest = next(key for key, item in runs.items() if item["status"] not in running)
                 del runs[oldest]
-                deliveries.pop(oldest, None)
             runs[run["id"]] = run
             if delay:
                 scheduled = run["id"]
@@ -469,13 +477,14 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         reportUrlUnavailable: str | None = None
 
     @router.post("/demo-webhook", status_code=202)
-    def receive(payload: Delivery):
+    def receive(payload: Delivery, request: Request):
+        supplied = request.headers.get(DEMO_WEBHOOK_HEADER, "").encode("utf-8")
+        if not compare_digest(supplied, webhook_secret.encode("ascii")):
+            raise HTTPException(403, "Демонстрационный webhook принимает только внутренние уведомления.")
         with lock:
             run = runs.get(payload.runId)
             if run is None or run["status"] != "running":
                 raise HTTPException(404, "Текущий запуск не найден.")
-            deliveries[payload.runId] = payload.model_dump()
-            run["delivery"] = deliveries[payload.runId]
         return {"accepted": True}
 
     return router

@@ -88,11 +88,12 @@ class SchemeTests(unittest.TestCase):
             patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "0"}),
             patch("backend.schemes.get_summary_provider", return_value=provider),
         ):
-            result = self.client.post("/api/workflow/generate", json={
-                "prompt": "По кнопке проверь Repair Desk на секреты и уязвимые зависимости. Подготовь рекомендации.",
-            })
-        self.assertEqual(result.status_code, 200, result.text)
-        kinds = {node["kind"] for node in result.json()["nodes"]}
-        self.assertIn("secret", kinds)
-        self.assertIn("sca", kinds)
-        self.assertNotIn("sast", kinds)
+            for prompt in (
+                "По кнопке проверь Repair Desk на секреты и уязвимые зависимости. Подготовь рекомендации.",
+                "Проверь Repair Desk на секреты. Также подключи SCA.",
+            ):
+                with self.subTest(prompt=prompt):
+                    result = self.client.post("/api/workflow/generate", json={"prompt": prompt})
+                    self.assertEqual(result.status_code, 200, result.text)
+                    kinds = {node["kind"] for node in result.json()["nodes"]}
+                    self.assertEqual(kinds & {"secret", "sca", "sast"}, {"secret", "sca"})

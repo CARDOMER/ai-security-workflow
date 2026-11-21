@@ -100,19 +100,32 @@ class GeneratedScenario(Input):
         return result
 
 
-def explicit_analyzers(prompt: str) -> list[str]:
-    # Only resolve an explicit positive scan target, leaving ambiguous requests to the model.
-    clause = re.search(r"\bпроверь\w*\b[^.!?;]*?\bна\s+([^.!?;]+)", prompt.casefold())
-    if clause is None or re.search(r"\b(?:не|без|кроме|только\s+не)\b", clause[0]):
-        return []
-    target = clause[1]
+def mentioned_analyzers(text: str) -> list[str]:
     return [
         name for name, pattern in (
             ("secret", r"\b(?:секрет\w*|парол\w*|токен\w*|ключ\w*|secret)\b"),
             ("sca", r"\b(?:зависимост\w*|библиотек\w*|sca)\b"),
             ("sast", r"\b(?:sast|статическ\w*\s+анализ\w*)\b"),
-        ) if re.search(pattern, target)
+        ) if re.search(pattern, text)
     ]
+
+
+def explicit_analyzers(prompt: str) -> list[str]:
+    # Override model choices only when every analyzer mention is part of a recognized positive instruction.
+    requested = {}
+    for sentence in re.split(r"[.!?;]+", prompt.casefold()):
+        names = mentioned_analyzers(sentence)
+        if not names:
+            continue
+        targets = re.search(r"\bпроверь\w*\b.*?\bна\s+(.+)", sentence)
+        addition = re.match(r"\s*(?:также\s+)?(?:подключи\w*|добавь\w*|включи\w*|запусти\w*)\s+(.+)", sentence)
+        instruction = targets or addition
+        if instruction is None or re.search(r"\b(?:не|без|кроме|исключи\w*|вместо)\b", sentence):
+            return []
+        if mentioned_analyzers(instruction[1]) != names:
+            return []
+        requested.update(dict.fromkeys(names))
+    return list(requested)
 
 
 def make_scheme_router(database: Path):

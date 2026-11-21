@@ -3,6 +3,7 @@ from hmac import compare_digest
 from os import getenv
 from pathlib import Path
 import re
+from sqlite3 import Error as DatabaseError
 from typing import Annotated, Protocol
 
 import httpx
@@ -10,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.quality import evaluate, read_reference
+from backend.history import RunHistory
 
 from backend.sca_scanner import MavenScaScanner, ScaFinding
 from backend.schemes import make_scheme_router
@@ -25,6 +27,7 @@ from backend.workflow import make_workflow_router
 ROOT = Path(__file__).resolve().parents[1] / "test-data" / "training-project"
 DATABASE = ROOT.parent / "vulnerability-database" / "vulnerabilities.json"
 REFERENCE = ROOT.parent / "ground-truth" / "training-findings.json"
+HISTORY_PATH = Path(getenv("WORKFLOW_HISTORY_DB", str(ROOT.parents[1] / "workflow-history.sqlite3")))
 Finding = Annotated[SecretFinding | ScaFinding | SastFinding, Field(discriminator="category")]
 
 
@@ -56,8 +59,8 @@ def health() -> dict[str, str]:
 
 
 def scan_training(selected: Sequence[str] | set[str]) -> ScanReport:
-    if not ROOT.is_dir():
-        raise HTTPException(503, "Учебный проект отсутствует в test-data/training-project.")
+    if not (ROOT / "build.gradle.kts").is_file():
+        raise HTTPException(503, "Учебный проект отсутствует или неполный. Нужен test-data/training-project/build.gradle.kts.")
     try:
         return ScanReport(findings=[
             finding for name, analyzer in ANALYZERS.items() if name in selected
@@ -120,6 +123,28 @@ def summarize_report(
     return summarize_metadata(metadata, None if getenv("WORKFLOW_PUBLIC_DEMO") == "1" else provider)
 
 
+@app.post("/api/workflow/history/{run_id}/summary", response_model=SummaryResult, response_model_exclude_none=True)
+def prepare_saved_summary(run_id: str, provider: Annotated[SummaryProvider | None, Depends(get_summary_provider)]):
+    history = RunHistory(HISTORY_PATH)
+    try:
+        saved = history.find(run_id)
+        if saved is None:
+            raise HTTPException(404, "Запуск не найден в истории.")
+        if saved["status"] == "running":
+            raise HTTPException(409, "Дождитесь завершения запуска.")
+        report = ScanReport.model_validate(saved.get("report") or {"findings": []})
+        if not 1 <= len(report.findings) <= 100:
+            raise HTTPException(422, "Для рекомендаций нужен отчёт с 1–100 находками.")
+        summary = summarize_metadata(
+            report_metadata(report.findings), None if getenv("WORKFLOW_PUBLIC_DEMO") == "1" else provider,
+        )
+        if not history.save_summary(run_id, summary.model_dump(exclude_none=True)):
+            raise HTTPException(409, "Не удалось сохранить рекомендации для этого запуска.")
+        return summary
+    except (DatabaseError, OSError):
+        raise HTTPException(503, "Не удалось сохранить рекомендации. История недоступна.") from None
+
+
 ADVISORY = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b", re.I)
 
 
@@ -147,5 +172,5 @@ def summarize_metadata(metadata: list[dict], provider: SummaryProvider | None) -
     return SummaryResult(mode="llm", provider=provider_name, **summary.model_dump())
 
 
-app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata))
-app.include_router(make_scheme_router(Path(getenv("WORKFLOW_HISTORY_DB", str(ROOT.parents[1] / "workflow-history.sqlite3")))))
+app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata, HISTORY_PATH))
+app.include_router(make_scheme_router(HISTORY_PATH))

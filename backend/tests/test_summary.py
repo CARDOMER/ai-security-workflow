@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
 import httpx
 from fastapi.testclient import TestClient
 
+from backend.history import RunHistory
 from backend.main import app
 from backend.summary import GigaChatProvider, YandexProvider, REPORT_SIGNATURE_HEADER, get_summary_provider
 
@@ -116,6 +119,27 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["mode"], "rules")
         self.assertIn("15", response.json()["summary"])
+
+    def test_manual_summary_is_saved_with_the_workflow_report(self):
+        report, _ = self.report(["sca"])
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "history.sqlite3"
+            history = RunHistory(database)
+            entry = {"id": "training-run", "status": "running", "completedAt": "2026-01-01",
+                     "report": report, "summary": None}
+            history.save(entry)
+            endpoint = "/api/workflow/history/training-run/summary"
+            with (
+                patch("backend.main.HISTORY_PATH", database),
+                patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1"}),
+            ):
+                self.assertEqual(self.client.post(endpoint).status_code, 409)
+                history.save(dict(entry, status="done"))
+                response = self.client.post(endpoint)
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = RunHistory(database).find(entry["id"])
+            self.assertEqual(saved["summary"], response.json())
+            self.assertEqual(saved["report"], report)
 
     def test_legacy_openai_configuration_cannot_activate_cloud(self):
         with patch.dict("os.environ", {"AI_SUMMARY_PROVIDER": "openai", "OPENAI_API_KEY": "test", "YANDEX_API_KEY": "test"}):

@@ -49,6 +49,17 @@ class RunHistory:
             ).fetchone()
         return json.loads(row["payload"]) if row else None
 
+    def save_summary(self, run_id: str, summary: dict) -> bool:
+        with closing(self.connect()) as connection, connection:
+            cursor = connection.execute(
+                """UPDATE workflow_runs
+                   SET payload = json_set(payload, '$.summary', json(?))
+                   WHERE id = ? AND json_extract(payload, '$.status') != 'running'
+                   AND json_type(payload, '$.report') = 'object'""",
+                (json.dumps(summary, ensure_ascii=False), run_id),
+            )
+            return cursor.rowcount == 1
+
 
 def finding_key(item: dict) -> tuple:
     if item["category"] == "SCA":

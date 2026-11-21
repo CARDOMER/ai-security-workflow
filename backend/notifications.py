@@ -3,6 +3,22 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+DEMO_WEBHOOK_PATH = "/api/workflow/demo-webhook"
+DEMO_WEBHOOK_HEADER = "X-Cyber-Garden-Webhook"
+
+
+def is_local_demo_webhook(address: str) -> bool:
+    try:
+        url = urlsplit(address)
+        return (
+            url.scheme in {"http", "https"}
+            and url.hostname in {"127.0.0.1", "localhost", "::1"}
+            and url.path == DEMO_WEBHOOK_PATH
+            and not url.username and not url.password
+        )
+    except ValueError:
+        return False
+
 
 def report_address(run_id: str):
     address = getenv("WORKFLOW_UI_URL") or getenv("RENDER_EXTERNAL_URL", "")
