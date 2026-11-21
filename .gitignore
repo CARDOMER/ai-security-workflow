@@ -1,0 +1,16 @@
+.venv/
+.node/
+/node-v*-win-*.zip
+__pycache__/
+frontend/node_modules/
+frontend/dist/
+test-data/
+workflow-history.sqlite3*
+/.gigachat-check-result.json
+.env
+.env.*
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
