@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { Workflow, type Graph, type NodeEvent, type NodeStatus } from './Workflow'
 import { ReportActions, type Summary } from './ReportActions'
 import { History } from './History'
+import { FindingCard } from './FindingCard'
+import { Quality } from './Quality'
 import './style.css'
 
 type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
@@ -59,6 +61,16 @@ const labels: Record<string, string> = {
   'object-authorization': 'Ошибка проверки доступа к объекту',
 }
 
+function findingName(finding: Finding) {
+  return finding.category === 'SCA' ? `${finding.group}:${finding.artifact}:${finding.version}`
+    : labels[finding.class] ?? finding.class
+}
+
+function findingLocation(finding: Finding) {
+  return finding.category === 'SCA' ? finding.path
+    : `${finding.path}:${finding.line}${finding.endLine ? `–${finding.endLine}` : ''}`
+}
+
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
@@ -74,6 +86,7 @@ function App() {
   const [run, setRun] = useState<RunSnapshot | null>(null)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [savedSource, setSavedSource] = useState('')
+  const [activeFinding, setActiveFinding] = useState<Finding | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -93,6 +106,7 @@ function App() {
     setResult(null)
     setError('')
     setSavedSource('')
+    setActiveFinding(null)
   }
 
   async function runScan(graph: Graph) {
@@ -188,14 +202,13 @@ function App() {
             <thead><tr><th>Категория</th><th>Находка</th><th>Критичность</th><th>Расположение</th></tr></thead>
             <tbody>{report.findings.map((finding, index) => {
               const sourceFinding = finding.category !== 'SCA'
-              const name = sourceFinding ? labels[finding.class] ?? finding.class
-                : `${finding.group}:${finding.artifact}:${finding.version}`
-              const location = sourceFinding ? `${finding.path}:${finding.line}${finding.endLine ? `–${finding.endLine}` : ''}`
-                : finding.path
+              const name = findingName(finding)
+              const location = findingLocation(finding)
               return (
               <tr id={`finding-${index + 1}`} key={sourceFinding ? `${finding.category}:${location}:${finding.class}` : `SCA:${location}:${name}:${finding.advisoryId}`}>
                 <td><code>{finding.category}</code><span className="finding-number">№ {index + 1}</span></td>
-                <td><strong className="finding-name">{name}</strong>{!sourceFinding && <p><code>{finding.advisoryId}</code></p>}<p>{finding.description}</p></td>
+                <td><button className="finding-name" type="button" aria-haspopup="dialog"
+                  onClick={() => setActiveFinding(finding)}>{name}</button>{!sourceFinding && <p><code>{finding.advisoryId}</code></p>}<p>{finding.description}</p></td>
                 <td><span className={`severity ${finding.severity.toLowerCase()}`}>{severityLabels[finding.severity]}</span></td>
                 <td><code className="path">{location}</code></td>
               </tr>
@@ -209,6 +222,10 @@ function App() {
           setResult({ report: saved, signature: '' })
           setSavedSource(source)
         }} />
+        <Quality />
+        {activeFinding && <FindingCard finding={activeFinding} name={findingName(activeFinding)}
+          location={findingLocation(activeFinding)} severity={severityLabels[activeFinding.severity]}
+          onClose={() => setActiveFinding(null)} />}
       </main>
     </>
   )

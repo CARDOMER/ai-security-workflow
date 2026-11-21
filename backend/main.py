@@ -6,8 +6,10 @@ import re
 from typing import Annotated, Protocol
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
+
+from backend.quality import evaluate, read_reference
 
 from backend.sca_scanner import MavenScaScanner, ScaFinding
 from backend.sast_scanner import KotlinSastScanner, SastFinding
@@ -21,6 +23,7 @@ from backend.workflow import make_workflow_router
 
 ROOT = Path(__file__).resolve().parents[1] / "test-data" / "training-project"
 DATABASE = ROOT.parent / "vulnerability-database" / "vulnerabilities.json"
+REFERENCE = ROOT.parent / "ground-truth" / "training-findings.json"
 Finding = Annotated[SecretFinding | ScaFinding | SastFinding, Field(discriminator="category")]
 
 
@@ -37,9 +40,10 @@ class Analyzer(Protocol):
     def scan(self, root: Path) -> Sequence[Finding]: ...
 
 
+SCA = MavenScaScanner(DATABASE)
 ANALYZERS: dict[str, Analyzer] = {
     "secret": SecretsScanner(),
-    "sca": MavenScaScanner(DATABASE),
+    "sca": SCA,
     "sast": KotlinSastScanner(),
 }
 app = FastAPI(title="AI Security Workflow")
@@ -50,22 +54,55 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/scan", response_model=ScanReport, response_model_exclude_none=True)
-def scan(response: Response, request: ScanRequest | None = None) -> ScanReport:
-    selected = set(request.analyzers) if request else ANALYZERS.keys()
-    if selected - ANALYZERS.keys():
-        raise HTTPException(422, "Сценарий содержит неизвестный анализатор.")
+def scan_training(selected: Sequence[str] | set[str]) -> ScanReport:
     if not ROOT.is_dir():
         raise HTTPException(503, "Учебный проект отсутствует в test-data/training-project.")
     try:
-        report = ScanReport(findings=[
+        return ScanReport(findings=[
             finding for name, analyzer in ANALYZERS.items() if name in selected
             for finding in analyzer.scan(ROOT)
         ])
     except (OSError, ValueError):
         raise HTTPException(500, "Не удалось прочитать файлы проекта или справочник Maven.") from None
+
+
+@app.post("/api/scan", response_model=ScanReport, response_model_exclude_none=True)
+def scan(response: Response, request: ScanRequest | None = None) -> ScanReport:
+    selected = set(request.analyzers) if request else set(ANALYZERS)
+    if selected - ANALYZERS.keys():
+        raise HTTPException(422, "Сценарий содержит неизвестный анализатор.")
+    report = scan_training(selected)
     response.headers[REPORT_SIGNATURE_HEADER] = sign_metadata(report_metadata(report.findings))
     return report
+
+
+@app.post("/api/quality")
+def check_quality():
+    try:
+        reference = read_reference(REFERENCE)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(503, "Эталон Repair Desk недоступен или повреждён.") from None
+    report = scan_training(set(ANALYZERS))
+    try:
+        advisories = SCA.advisories()
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(503, "Справочник Maven недоступен.") from None
+    try:
+        return evaluate(reference, report_metadata(report.findings), advisories)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(503, "Формат эталона Repair Desk не поддерживается.") from None
+
+
+@app.get("/api/sca/advisory")
+def get_advisory(
+    group: Annotated[str, Query(min_length=1, max_length=200)],
+    artifact: Annotated[str, Query(min_length=1, max_length=200)],
+    advisoryId: Annotated[str, Query(min_length=1, max_length=40)],
+):
+    try:
+        return SCA.advisory_details(group, artifact, advisoryId)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(503, "Справочник Maven недоступен.") from None
 
 
 @app.post("/api/report/summary", response_model=SummaryResult, response_model_exclude_none=True)

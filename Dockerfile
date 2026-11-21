@@ -25,6 +25,7 @@ COPY backend/ ./backend/
 COPY demo/ ./demo/
 COPY --from=training /training/training-project ./test-data/training-project
 COPY --from=training /training/vulnerability-database ./test-data/vulnerability-database
+COPY --from=training /training/ground-truth/training-findings.json ./test-data/ground-truth/training-findings.json
 COPY --from=frontend /build/dist ./frontend/dist
 
 USER 10001:10001

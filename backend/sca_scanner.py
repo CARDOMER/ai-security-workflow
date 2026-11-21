@@ -194,6 +194,17 @@ class MavenScaScanner:
     def __init__(self, database: Path):
         self.database = database
 
+    def advisories(self):
+        return json.loads(self.database.read_text(encoding="utf-8-sig"))["vulnerabilities"]
+
+    def advisory_details(self, group: str, artifact: str, advisory_id: str):
+        for entry in self.advisories():
+            if (entry["group"], entry["artifact"]) == (group, artifact) and advisory_id in (
+                entry["id"], *entry.get("aliases", [])
+            ):
+                return {"ranges": entry["ranges"], "fixedVersions": entry.get("fixedVersions", [])}
+        return None
+
     def scan(self, root: Path) -> list[ScaFinding]:
         build = root / "build.gradle.kts"
         if not build.is_file():
@@ -204,9 +215,8 @@ class MavenScaScanner:
             read_optional(root / "gradle.lockfile"),
             read_optional(root / "gradle" / "libs.versions.toml"),
         )
-        database = json.loads(self.database.read_text(encoding="utf-8-sig"))
         advisories = defaultdict(list)
-        for entry in database["vulnerabilities"]:
+        for entry in self.advisories():
             advisories[entry["group"], entry["artifact"]].append(entry)
 
         findings = []

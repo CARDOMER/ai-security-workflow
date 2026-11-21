@@ -109,7 +109,18 @@ td p { margin: 5px 0 0; font-size: .875rem; line-height: 1.5; }
 .medium { background: var(--medium-bg); color: var(--medium); }
 .critical { background: var(--critical-bg); color: var(--critical); }
 .low { background: var(--low-bg); color: var(--low); }
-.finding-name { overflow-wrap: anywhere; }
+.finding-name { background: transparent; border: 0; color: var(--link); padding: 0; text-align: start; text-decoration: underline; text-underline-offset: .2em; overflow-wrap: anywhere; }
+.finding-card { width: min(620px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid var(--line); border-radius: 15px; color: var(--text); background: var(--panel); overflow-wrap: anywhere; }
+.finding-card::backdrop { background: rgb(6 16 12 / .65); }
+.finding-card-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
+.finding-card dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); column-gap: 12px; row-gap: 10px; padding: 16px 0; border-block: 1px solid var(--line); }
+.finding-card dt { font-weight: 650; }
+.finding-card dd { margin: 0; }
+.finding-card h3 { margin: 16px 0 4px; }
+.finding-card p { margin: 4px 0; line-height: 1.5; }
+.quality table { min-width: 560px; }
+.quality tfoot { font-weight: 650; background: var(--surface); }
+.quality .history-detail > p { margin-top: 0; }
 .workflow-options { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 0 24px 16px; }
 .workflow-options label { display: inline-flex; align-items: center; gap: 7px; font-size: .9rem; cursor: pointer; }
 .workflow-options input { accent-color: var(--accent); width: 16px; height: 16px; }
