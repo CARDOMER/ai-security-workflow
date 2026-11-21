@@ -14,3 +14,4 @@ workflow-history.sqlite3*
 *.key
 *.p12
 *.pfx
+/ci-artifacts/

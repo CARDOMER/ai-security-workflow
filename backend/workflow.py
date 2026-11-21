@@ -61,6 +61,19 @@ class Workflow(Input):
     trigger: Literal["manual", "schedule"] = "manual"
 
 
+def scan_graph(upload_id=None, project_label=None):
+    analyzers = sorted(ANALYSIS)
+    return Workflow(
+        nodes=[Step(id=kind, kind=kind) for kind in ("manual", "source", *analyzers, "merge", "report")],
+        edges=[
+            Link(source="manual", target="source"), Link(source="merge", target="report"),
+            *(Link(source="source", target=kind) for kind in analyzers),
+            *(Link(source=kind, target="merge") for kind in analyzers),
+        ],
+        uploadId=upload_id, projectLabel=project_label,
+    )
+
+
 def ordered_steps(graph: Workflow):
     nodes = {node.id: node for node in graph.nodes}
     if len(nodes) != len(graph.nodes):
@@ -391,15 +404,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     def compare_demo():
         if len(demo_archives) != len(DEMO_ARCHIVES):
             raise HTTPException(503, "Демонстрационные архивы недоступны.")
-        analyzers = sorted(ANALYSIS)
-        nodes = [Step(id=kind, kind=kind) for kind in ("manual", "source", *analyzers, "merge", "report")]
-        edges = [
-            Link(source="manual", target="source"), Link(source="merge", target="report"),
-            *(Link(source="source", target=kind) for kind in analyzers),
-            *(Link(source=kind, target="merge") for kind in analyzers),
-        ]
         before, after = (
-            start(Workflow(nodes=nodes, edges=edges, uploadId=upload_id, projectLabel="Demo Desk"), wait=True)["id"]
+            start(scan_graph(upload_id, "Demo Desk"), wait=True)["id"]
             for upload_id in demo_archives
         )
         return {"before": before, "after": after, "difference": compare(before, after)}

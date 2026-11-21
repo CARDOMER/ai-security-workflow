@@ -1,0 +1,48 @@
+name: Security workflow
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Authorized training scenario
+        type: choice
+        default: clean-training
+        options:
+          - clean-training
+          - repair-desk
+
+permissions:
+  contents: read
+
+jobs:
+  security-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AI_SUMMARY_PROVIDER: rules
+      WORKFLOW_PUBLIC_DEMO: '0'
+      SCENARIO: ${{ inputs.scenario || 'clean-training' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Fetch the pinned training dataset
+        run: |
+          git init test-data
+          git -C test-data fetch --depth 1 https://github.com/TBagirov/training.git fe1fcbe212669783480666b9b60147c8a8c6eef4
+          git -C test-data checkout --detach FETCH_HEAD
+      - run: python -m pip install -r backend/requirements.txt -r backend/requirements-test.txt
+      - name: Run the security gate
+        run: python -m backend.ci "$SCENARIO"
+      - name: Upload the report and gate status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report-${{ env.SCENARIO }}
+          path: ci-artifacts/
+          if-no-files-found: error
