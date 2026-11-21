@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 from os import getenv
 from pathlib import Path
+import re
 import sqlite3
 from typing import Literal
 from uuid import uuid4
@@ -99,6 +100,21 @@ class GeneratedScenario(Input):
         return result
 
 
+def explicit_analyzers(prompt: str) -> list[str]:
+    # Only resolve an explicit positive scan target, leaving ambiguous requests to the model.
+    clause = re.search(r"\bпроверь\w*\b[^.!?;]*?\bна\s+([^.!?;]+)", prompt.casefold())
+    if clause is None or re.search(r"\b(?:не|без|кроме|только\s+не)\b", clause[0]):
+        return []
+    target = clause[1]
+    return [
+        name for name, pattern in (
+            ("secret", r"\b(?:секрет\w*|парол\w*|токен\w*|ключ\w*|secret)\b"),
+            ("sca", r"\b(?:зависимост\w*|библиотек\w*|sca)\b"),
+            ("sast", r"\b(?:sast|статическ\w*\s+анализ\w*)\b"),
+        ) if re.search(pattern, target)
+    ]
+
+
 def make_scheme_router(database: Path):
     router = APIRouter(prefix="/api/workflow")
 
@@ -137,10 +153,12 @@ def make_scheme_router(database: Path):
         if provider is None:
             raise HTTPException(503, "AI-генерация доступна в локальной версии с настроенной LLM.")
         now = datetime.now(timezone.utc)
+        requested = explicit_analyzers(request.prompt)
         messages = [
             {"role": "system", "content": (
                 "Опиши граф проверки встроенного учебного Repair Desk кратким JSON. "
-                "Ручной запуск: trigger=manual. Сканеры: secret, sca, sast. "
+                "Ручной запуск: trigger=manual. secret ищет секреты и токены, sca проверяет зависимости, "
+                "sast проверяет исходный код. "
                 "Для порога критичности condition.metric=severity, severity=HIGH или другой уровень. "
                 "Если условия нет, condition=null. При наличии условия AI и webhook исполняются только по ветке Да. "
                 "Например: {\"supported\":true,\"trigger\":\"manual\",\"at\":null,\"analyzers\":[\"secret\",\"sca\"],"
@@ -153,7 +171,10 @@ def make_scheme_router(database: Path):
         ]
         try:
             raw = provider.complete(messages, GeneratedScenario.model_json_schema(), "workflow_scenario", 750)
-            draft = GeneratedScenario.model_validate_json(raw).draft()
+            scenario = GeneratedScenario.model_validate_json(raw)
+            if requested:
+                scenario = scenario.model_copy(update={"analyzers": requested})
+            draft = scenario.draft()
         except (ValueError, HTTPException):
             raise HTTPException(422, "LLM вернула сценарий, который нельзя выполнить. Уточните задачу.") from None
         except (GigaChatRequestError, httpx.HTTPError, OSError, KeyError, TypeError, IndexError):

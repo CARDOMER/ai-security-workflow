@@ -77,3 +77,22 @@ class SchemeTests(unittest.TestCase):
         ):
             response = self.client.post("/api/workflow/generate", json={"prompt": "Проверь позже."})
         self.assertEqual(response.status_code, 422)
+
+    def test_explicit_scan_targets_are_preserved_if_model_selects_wrong_analyzer(self):
+        provider = Mock()
+        provider.complete.return_value = json.dumps({
+            "supported": True, "trigger": "manual", "analyzers": ["sast", "sca"], "ai": True, "webhook": True,
+            "condition": {"metric": "severity", "severity": "HIGH"},
+        })
+        with (
+            patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "0"}),
+            patch("backend.schemes.get_summary_provider", return_value=provider),
+        ):
+            result = self.client.post("/api/workflow/generate", json={
+                "prompt": "По кнопке проверь Repair Desk на секреты и уязвимые зависимости. Подготовь рекомендации.",
+            })
+        self.assertEqual(result.status_code, 200, result.text)
+        kinds = {node["kind"] for node in result.json()["nodes"]}
+        self.assertIn("secret", kinds)
+        self.assertIn("sca", kinds)
+        self.assertNotIn("sast", kinds)
