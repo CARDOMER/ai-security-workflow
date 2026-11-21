@@ -176,6 +176,54 @@ class GraphTests(unittest.TestCase):
         self.assertFalse(sent["reportComplete"])
         self.assertEqual(sent["failedAnalyzers"], ["sca"])
 
+    def test_link_is_already_resolvable_at_delivery_and_summary_persists(self):
+        captured = []
+
+        def delivery(_url, *, json, **_options):
+            stored = self.client.get(f"/api/workflow/history/{json['runId']}").json()
+            captured.append((json, stored))
+            return httpx.Response(202, request=httpx.Request("POST", "http://127.0.0.1/"))
+
+        with patch.dict("os.environ", {"WORKFLOW_UI_URL": "https://example.test"}), \
+             patch("backend.workflow.get_summary_provider", return_value=None), \
+             patch("backend.workflow.httpx.post", side_effect=delivery):
+            run = self.start(graph())
+            state = self.wait(run)
+        self.assertEqual(state["status"], "done")
+        self.assertEqual(state["nodes"]["condition"]["input"]["severity"], "CRITICAL")
+        self.assertEqual(state["nodes"]["condition"]["output"]["branch"], "yes")
+        self.assertEqual(state["nodes"]["webhook"]["output"]["httpStatus"], 202)
+        payload, at_delivery = captured[0]
+        self.assertEqual(payload["reportUrl"], f"https://example.test/?run={run}#results")
+        self.assertEqual(at_delivery["count"], 15)
+        final = self.client.get(f"/api/workflow/history/{run}").json()
+        self.assertEqual(final["summary"], state["summary"])
+        self.assertEqual(final["status"], "done")
+
+    def test_history_failure_explains_missing_report_link(self):
+        response = httpx.Response(202, request=httpx.Request("POST", "http://127.0.0.1/"))
+        with patch.dict("os.environ", {"WORKFLOW_UI_URL": "https://example.test"}), \
+             patch("backend.workflow.RunHistory.save", side_effect=OSError), \
+             patch("backend.workflow.httpx.post", return_value=response) as delivery:
+            result = self.wait(self.start(graph()))
+        self.assertIn("historyError", result)
+        payload = delivery.call_args.kwargs["json"]
+        self.assertNotIn("reportUrl", payload)
+        self.assertIn("История недоступна", payload["reportUrlUnavailable"])
+
+    def test_telegram_delivery_uses_only_a_preconfigured_test_chat(self):
+        payload = graph()
+        payload["nodes"][-1]["kind"] = "telegram"
+        response = httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", "https://api.telegram.org/"))
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "test-chat"}), \
+             patch("backend.notifications.httpx.post", return_value=response) as delivery:
+            result = self.wait(self.start(payload))
+        self.assertEqual(result["nodes"]["webhook"]["output"]["httpStatus"], 200)
+        request = delivery.call_args.kwargs["json"]
+        self.assertEqual(request["chat_id"], "test-chat")
+        self.assertIn("SECRET: 5", request["text"])
+        self.assertNotIn("src/main", request["text"])
+
     def test_report_available_during_ai_and_webhook_failure(self):
         entered = Event()
         release = Event()

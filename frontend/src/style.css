@@ -121,6 +121,20 @@ td p { margin: 5px 0 0; font-size: .875rem; line-height: 1.5; }
 .quality table { min-width: 560px; }
 .quality tfoot { font-weight: 650; background: var(--surface); }
 .quality .history-detail > p { margin-top: 0; }
+.scheme-tools { padding: 0 24px 16px; }
+.scheme-tools details { padding: 8px 0; }
+.scheme-tools summary { cursor: pointer; font-weight: 650; }
+.scheme-tools form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.scheme-tools label { display: grid; gap: 4px; }
+.scheme-tools :is(input, textarea) { font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 5px; max-width: 100%; }
+.scheme-tools textarea { width: min(420px, 75vw); }
+.scheme-tools li + li { margin-top: 12px; }
+.scheme-tools li p { margin: 4px 0; }
+.node-io { flex-basis: 100%; min-width: 0; }
+.node-io [role="tablist"] { display: flex; gap: 6px; }
+.node-io [aria-selected="true"] { background: var(--surface); }
+.node-io pre { margin: 8px 0; padding: 12px; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-receipt a { color: var(--link); }
 .workflow-options { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 0 24px 16px; }
 .workflow-options label { display: inline-flex; align-items: center; gap: 7px; font-size: .9rem; cursor: pointer; }
 .workflow-options input { accent-color: var(--accent); width: 16px; height: 16px; }

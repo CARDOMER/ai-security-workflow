@@ -4,13 +4,14 @@ import {
   useEdgesState, useNodesState, type Edge, type Node, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { SchemeTools } from './SchemeTools'
 
 const publicDemo = import.meta.env.VITE_PUBLIC_DEMO === '1'
 
 const names = {
   manual: 'Ручной запуск', schedule: 'Расписание', source: 'Учебный проект',
   secret: 'Secrets Scanner', sca: 'Maven SCA', sast: 'Kotlin SAST', merge: 'Объединение',
-  report: 'Отчёт', condition: 'Условие', ai: 'ИИ-разбор', webhook: 'HTTP webhook',
+  report: 'Отчёт', condition: 'Условие', ai: 'ИИ-разбор', webhook: 'HTTP webhook', telegram: 'Telegram',
 }
 type Kind = keyof typeof names
 type Branch = 'yes' | 'no'
@@ -22,7 +23,7 @@ export type Graph = {
   nodes: Step[]; edges: { source: string; target: string; branch?: Branch }[]
   trigger: 'manual' | 'schedule'; uploadId?: string; projectLabel?: string
 }
-export type NodeStatus = { status: string; detail: string }
+export type NodeStatus = { status: string; detail: string; input?: Record<string, unknown>; output?: Record<string, unknown> }
 export type NodeEvent = NodeStatus & { nodeId: string }
 type WorkflowNode = Node<{ step: Step; progress?: NodeStatus }, 'workflow'>
 const statuses: Record<string, string> = {
@@ -32,8 +33,8 @@ const statuses: Record<string, string> = {
 const allowed: Record<Kind, Kind[]> = {
   manual: ['source'], schedule: ['source'], source: ['secret', 'sca', 'sast'],
   secret: ['merge'], sca: ['merge'], sast: ['merge'], merge: ['report'],
-  report: ['condition', 'ai', 'webhook'], condition: ['ai', 'webhook'],
-  ai: ['webhook'], webhook: [],
+  report: ['condition', 'ai', 'webhook', 'telegram'], condition: ['ai', 'webhook', 'telegram'],
+  ai: ['webhook', 'telegram'], webhook: [], telegram: [],
 }
 const kinds = Object.keys(names) as Kind[]
 
@@ -141,7 +142,7 @@ function StepNode({ data }: NodeProps<WorkflowNode>) {
       <Handle type="source" id="yes" aria-label="Да" position={Position.Right} style={{ top: '30%' }} />
       <Handle type="source" id="no" aria-label="Нет" position={Position.Right} style={{ top: '70%' }} />
       <span>Да · Нет</span>
-    </> : kind !== 'webhook' && <Handle type="source" position={Position.Right} />}
+    </> : kind !== 'webhook' && kind !== 'telegram' && <Handle type="source" position={Position.Right} />}
   </div>
 }
 
@@ -160,6 +161,8 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
   const [draftMessage, setDraftMessage] = useState('')
   const [draftError, setDraftError] = useState('')
   const [importing, setImporting] = useState(false)
+  const [schemeBusy, setSchemeBusy] = useState(false)
+  const [ioTab, setIoTab] = useState<'input' | 'output'>('input')
   const [kind, setKind] = useState<Kind>('schedule')
   const [upload, setUpload] = useState<{ id: string; name: string } | null>(null)
   const [projectLabel, setProjectLabel] = useState('')
@@ -167,7 +170,7 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
   const [uploadError, setUploadError] = useState('')
   const [authorized, setAuthorized] = useState(false)
   const current = nodes.find(node => node.id === selected)?.data.step
-  const locked = busy || uploading || importing
+  const locked = busy || uploading || importing || schemeBusy
 
   useEffect(() => {
     if (nodes.some(node => node.dragging)) return
@@ -188,20 +191,24 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
+  function applyDraft(draft: ReturnType<typeof readDraft>, message: string) {
+    setNodes(draft.nodes)
+    setEdges(draft.edges)
+    setSelected(draft.nodes.find(item => item.data.step.kind === 'condition')?.id ?? '')
+    setUpload(null)
+    setUploadError('')
+    setDraftError('')
+    setDraftMessage(message)
+    onEdit()
+  }
+
   async function importDraft(file: File) {
     setImporting(true)
     setDraftError('')
     setDraftMessage('')
     try {
       if (file.size > 256 * 1024) throw new Error('Размер файла схемы должен быть до 256 КБ.')
-      const draft = readDraft(await file.text())
-      setNodes(draft.nodes)
-      setEdges(draft.edges)
-      setSelected(draft.nodes.find(item => item.data.step.kind === 'condition')?.id ?? '')
-      setUpload(null)
-      setUploadError('')
-      setDraftMessage('Схема импортирована. Источник проекта — встроенный Repair Desk.')
-      onEdit()
+      applyDraft(readDraft(await file.text()), 'Схема импортирована. Источник проекта — встроенный Repair Desk.')
     } catch (error) {
       setDraftError(error instanceof Error && !(error instanceof SyntaxError)
         ? error.message : 'Не удалось прочитать JSON схемы.')
@@ -259,7 +266,7 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
       <button className="secondary" disabled={locked} onClick={() => preset(false)}>Полная схема</button>
       <button className="secondary" disabled={locked} onClick={() => preset(true)}>Только Maven SCA</button>
       <label>Тип ноды <select disabled={locked} value={kind} onChange={event => setKind(event.target.value as Kind)}>
-        {kinds.map(item => <option key={item} value={item}>{names[item]}</option>)}
+        {kinds.filter(item => !publicDemo || item !== 'telegram').map(item => <option key={item} value={item}>{names[item]}</option>)}
       </select></label>
       <button className="secondary" disabled={locked || nodes.length >= 24 || (kind !== 'webhook' && nodes.some(item => item.data.step.kind === kind))}
         onClick={() => {
@@ -274,6 +281,8 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
           onChange={event => { const file = event.target.files?.[0]; if (file) void importDraft(file); event.target.value = '' }} />
       </label>
     </div>
+    <SchemeTools publicDemo={publicDemo} locked={locked} getDraft={() => snapshot(nodes, edges)}
+      onApply={(draft, message) => applyDraft(readDraft(JSON.stringify(draft)), message)} onBusy={setSchemeBusy} />
     {draftError && <p className="workflow-error alert" role="alert">{draftError}</p>}
     {draftMessage && <p className="workflow-error" role="status">{draftMessage}</p>}
     <div className="workflow-options">
@@ -329,6 +338,7 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
       <strong>{names[current.kind]}</strong>
       {current.kind === 'source' && <span>{upload?.name ?? 'Repair Desk'}</span>}
       {current.kind === 'webhook' && <span>Получатель задаётся на сервере</span>}
+      {current.kind === 'telegram' && <span>Учебный чат задаётся на сервере</span>}
       {current.kind === 'condition' && <>
         <label>Проверка <select disabled={locked} value={current.metric ?? 'count'}
           onChange={event => update({ metric: event.target.value as Step['metric'] })}>
@@ -350,6 +360,23 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
       {!!progress[current.id] && <span className="node-timeline" aria-label="Журнал ноды">
         {events.filter(item => item.nodeId === current.id).map(item => statuses[item.status]).join(' → ')}
       </span>}
+      {progress[current.id] && <div className="node-io">
+        <div role="tablist" aria-label="Данные ноды">
+          {(['input', 'output'] as const).map(tab => <button key={tab} type="button" id={`io-${tab}`} role="tab"
+            aria-controls="io-data" aria-selected={ioTab === tab} tabIndex={ioTab === tab ? 0 : -1}
+            className="secondary" onClick={() => setIoTab(tab)} onKeyDown={event => {
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+              event.preventDefault()
+              const next = tab === 'input' ? 'output' : 'input'
+              setIoTab(next)
+              document.getElementById(`io-${next}`)?.focus()
+            }}>{tab === 'input' ? 'Вход' : 'Выход'}</button>)}
+        </div>
+        <div id="io-data" role="tabpanel" aria-labelledby={`io-${ioTab}`} tabIndex={0}>
+          {progress[current.id][ioTab] ? <pre>{JSON.stringify(progress[current.id][ioTab], null, 2)}</pre>
+            : <p>Данные этого этапа пока недоступны.</p>}
+        </div>
+      </div>}
     </div>}
     <div className="workflow-run">
       <p>Соединяйте узлы за круглые контакты. Клавиша Delete удаляет выбранную ноду или связь.</p>

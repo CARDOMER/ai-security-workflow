@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Finding, Report } from './main'
+import type { Summary } from './ReportActions'
 
 type RunEntry = {
   id: string; status: string; completedAt: string; source: string; projectKey: string
@@ -7,6 +8,7 @@ type RunEntry = {
 }
 type SavedRun = RunEntry & {
   report: Report | null
+  summary?: Summary | null
   nodes: Record<string, { kind: string; status: string; detail: string }>
 }
 type Difference = { added: Finding[]; removed: Finding[]; unchanged: Finding[] }
@@ -25,7 +27,7 @@ function stamp(run: RunEntry) {
 }
 
 export function History({ revision, disabled, onOpen }: {
-  revision: number; disabled: boolean; onOpen: (report: Report | null, source: string) => void
+  revision: number; disabled: boolean; onOpen: (report: Report | null, source: string, summary?: Summary | null) => void
 }) {
   const [runs, setRuns] = useState<RunEntry[]>([])
   const [selected, setSelected] = useState<SavedRun | null>(null)
@@ -58,7 +60,7 @@ export function History({ revision, disabled, onOpen }: {
     try {
       const run = await request<SavedRun>(`/api/workflow/history/${id}`)
       setSelected(run)
-      onOpen(run.report, run.source)
+      onOpen(run.report, run.source, run.summary)
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : 'Не удалось открыть отчёт.')
     } finally {

@@ -103,6 +103,9 @@ class GigaChatProvider:
         self.ca_file = ca_file
 
     def summarize(self, metadata: list[dict]) -> str:
+        return self.complete(summary_messages(metadata), ReportSummary.model_json_schema(), "report_summary", 1200)
+
+    def complete(self, messages, schema, schema_name, max_tokens) -> str:
         context = ssl.create_default_context()
         if self.ca_file:
             context.load_verify_locations(cafile=self.ca_file)
@@ -123,10 +126,10 @@ class GigaChatProvider:
                 headers={"Authorization": f"Bearer {token}"},
                 json={
                     "model": self.model,
-                    "messages": summary_messages(metadata),
-                    "max_tokens": 1200,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
                     "response_format": {
-                        "type": "json_schema", "schema": ReportSummary.model_json_schema(), "strict": True,
+                        "type": "json_schema", "schema": schema, "strict": True,
                     },
                 },
                 timeout=15.0,
@@ -142,6 +145,9 @@ class YandexProvider:
         self.api_key = api_key
 
     def summarize(self, metadata: list[dict]) -> str:
+        return self.complete(summary_messages(metadata), ReportSummary.model_json_schema(), "report_summary", 1800)
+
+    def complete(self, messages, schema, schema_name, max_tokens) -> str:
         response = httpx.post(
             "https://ai.api.cloud.yandex.net/v1/chat/completions",
             headers={
@@ -152,13 +158,13 @@ class YandexProvider:
             json={
                 "model": self.model,
                 "store": False,
-                "max_tokens": 1800,
+                "max_tokens": max_tokens,
                 "temperature": 0.2,
-                "messages": summary_messages(metadata),
+                "messages": messages,
                 "response_format": {
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "report_summary", "strict": True, "schema": ReportSummary.model_json_schema(),
+                        "name": schema_name, "strict": True, "schema": schema,
                     },
                 },
             },

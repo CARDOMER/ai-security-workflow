@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.archive import MAX_UPLOAD, training_zip
 from backend.history import RunHistory, compare_runs
+from backend.notifications import report_address, send_telegram
 from backend.summary import SEVERITY_ORDER, get_summary_provider, report_metadata, sign_metadata
 
 
@@ -25,15 +26,16 @@ class Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-Kind = Literal["manual", "schedule", "source", "secret", "sca", "sast", "merge", "condition", "report", "ai", "webhook"]
+Kind = Literal["manual", "schedule", "source", "secret", "sca", "sast", "merge", "condition", "report", "ai", "webhook", "telegram"]
 TRIGGERS = {"manual", "schedule"}
 ANALYSIS = {"secret", "sca", "sast"}
 DEMO_ARCHIVES = ("check-before.zip", "check-after.zip")
 CONNECTIONS = {
     "manual": {"source"}, "schedule": {"source"}, "source": ANALYSIS,
     **{kind: {"merge"} for kind in ANALYSIS},
-    "merge": {"report"}, "report": {"condition", "ai", "webhook"},
-    "condition": {"ai", "webhook"}, "ai": {"webhook"}, "webhook": set(),
+    "merge": {"report"}, "report": {"condition", "ai", "webhook", "telegram"},
+    "condition": {"ai", "webhook", "telegram"}, "ai": {"webhook", "telegram"},
+    "webhook": set(), "telegram": set(),
 }
 
 
@@ -188,10 +190,11 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         with lock:
             run.update(values)
 
-    def node_status(run, node, status, detail=""):
+    def node_status(run, node, status, detail="", output=None):
         with lock:
             state = {"status": status, "detail": detail}
-            run["nodes"][node.id] = state
+            previous = run["nodes"][node.id]
+            run["nodes"][node.id] = {**previous, **state, **({"output": output} if output is not None else {})}
             run["events"].append({"nodeId": node.id, **state})
 
     def execute(graph, ordered, inbound, run, archive, provider):
@@ -203,39 +206,86 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         merge = next(node for node in ordered if node.kind == "merge")
         contributors = {edge.source for edge in inbound[merge.id]}
         failed_analyzers: list[str] = []
+
+        def record(status):
+            selected = sorted(
+                node.kind for node in ordered if node.id in contributors
+                and run["nodes"][node.id]["status"] in {"done", "error"}
+            )
+            return {
+                "id": run["id"], "status": status, "completedAt": datetime.now(timezone.utc).isoformat(),
+                "source": (graph.projectLabel or "Загруженный ZIP") if archive is not None else "Repair Desk",
+                "projectKey": ("upload:" + (graph.projectLabel.strip().casefold() if graph.projectLabel
+                                            else graph.uploadId)) if archive is not None else "builtin:repair-desk",
+                "analyzers": selected,
+                "comparable": bool(run.get("report")) and bool(selected) and not failed_analyzers,
+                "nodes": {node.id: {"kind": node.kind, **run["nodes"][node.id]} for node in ordered},
+                "report": run.get("report"), "summary": summary,
+                "count": len(findings) if run.get("report") else None,
+            }
+
+        def report_link():
+            if not (address := report_address(run["id"])):
+                return {"reportUrlUnavailable": "Адрес интерфейса для ссылки на отчёт не настроен."}
+            try:
+                history.save(record("running"))
+            except (DatabaseError, OSError):
+                return {"reportUrlUnavailable": "История недоступна. Ссылку на сохранённый отчёт создать не удалось."}
+            return {"reportUrl": address}
+
         update(run, status="running")
         try:
             if archive is None and not root.is_dir():
                 raise ValueError("Учебный проект отсутствует.")
             with (nullcontext(root) if archive is None else training_zip(archive)) as project:
                 for node in ordered:
-                    active = node.kind == graph.trigger or any(
-                        enabled.get(edge.source, False)
-                        and (edge.branch is None or branches.get(edge.source) == edge.branch)
-                        for edge in inbound[node.id]
-                    )
-                    if not active:
+                    incoming = [edge.source for edge in inbound[node.id] if enabled.get(edge.source, False)
+                                and (edge.branch is None or branches.get(edge.source) == edge.branch)]
+                    if node.kind != graph.trigger and not incoming:
                         node_status(run, node, "skipped")
                         continue
+                    inputs = {"from": incoming, "findings": len(findings)}
+                    if node.kind == "merge":
+                        inputs["analyzerCounts"] = {source: len(results[source]) for source in incoming if source in results}
+                    if node.kind == "condition":
+                        inputs["metric"] = node.metric
+                        if node.metric == "count":
+                            inputs["minimum"] = node.minimum
+                        elif node.metric == "severity":
+                            inputs["severity"] = node.severity
+                        else:
+                            inputs["pathExpressionConfigured"] = bool(node.pattern)
+                    if node.at is not None and node.kind == "schedule":
+                        inputs["scheduledAt"] = node.at.isoformat()
+                    with lock:
+                        run["nodes"][node.id] = {**run["nodes"][node.id], "input": inputs}
                     node_status(run, node, "running")
                     detail = ""
+                    output = {}
                     try:
-                        if node.kind == "source":
+                        if node.kind in TRIGGERS:
+                            output = {"trigger": graph.trigger}
+                        elif node.kind == "source":
                             detail = "Repair Desk" if archive is None else "Загруженный ZIP"
+                            output = {"source": detail}
                         elif node.kind in ANALYSIS:
                             results[node.id] = list(analyzers[node.kind].scan(project))
                             detail = f"Находок: {len(results[node.id])}"
+                            output = {"findings": len(results[node.id])}
                         elif node.kind == "merge":
                             findings = [item for edge in inbound[node.id] for item in results.get(edge.source, [])]
                             detail = f"Объединено: {len(findings)}"
+                            output = {"counts": dict(Counter(item.category for item in findings))}
                         elif node.kind == "report":
                             report = {"findings": [item.model_dump(by_alias=True, exclude_none=True) for item in findings]}
                             signature = sign_metadata(report_metadata(findings))
                             update(run, report=report, signature=signature)
                             detail = f"Находок: {len(findings)}"
+                            output = {"findings": len(findings), "reportComplete": not failed_analyzers}
                         elif node.kind == "condition":
                             branches[node.id] = "yes" if condition_matches(node, findings) else "no"
                             detail = "Ветка «Да»" if branches[node.id] == "yes" else "Ветка «Нет»"
+                            output = {"branch": branches[node.id]}
                         elif node.kind == "ai":
                             if not findings or len(findings) > 100:
                                 node_status(run, node, "skipped", "Разбор доступен для 1–100 находок.")
@@ -243,26 +293,37 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                                 continue
                             summary = summarize(report_metadata(findings), provider).model_dump(exclude_none=True)
                             update(run, summary=summary)
+                            output = {"mode": summary["mode"], "recommendations": len(summary["priorities"])}
                             if summary["mode"] == "rules":
                                 detail = "Приоритизация по правилам"
                             else:
                                 detail = {"gigachat": "GigaChat", "yandex": "YandexGPT"}.get(summary.get("provider"), "ИИ-разбор")
-                        elif node.kind == "webhook":
+                        elif node.kind in {"webhook", "telegram"}:
+                            if node.kind == "telegram" and public_demo:
+                                raise ValueError("Telegram доступен только в локальном режиме.")
                             payload = {
                                 "runId": run["id"],
                                 "counts": dict(Counter(item.category for item in findings)),
                                 "maxSeverity": min((item.severity for item in findings), key=SEVERITY_ORDER.__getitem__, default=None),
                                 "reportComplete": not failed_analyzers,
                                 "failedAnalyzers": sorted(failed_analyzers),
+                                **report_link(),
                             }
                             if summary is not None:
                                 payload["recommendations"] = summary["priorities"]
-                            response = httpx.post(
-                                getenv("WORKFLOW_WEBHOOK_URL", "http://127.0.0.1:8000/api/workflow/demo-webhook"),
-                                json=payload, timeout=5, follow_redirects=False,
-                            )
-                            response.raise_for_status()
-                            detail = f"Доставлено, HTTP {response.status_code}"
+                            if node.kind == "webhook":
+                                response = httpx.post(
+                                    getenv("WORKFLOW_WEBHOOK_URL", "http://127.0.0.1:8000/api/workflow/demo-webhook"),
+                                    json=payload, timeout=5, follow_redirects=False,
+                                )
+                                response.raise_for_status()
+                                http_status = response.status_code
+                            else:
+                                http_status = send_telegram(payload)
+                            detail = f"Доставлено, HTTP {http_status}"
+                            output = {"httpStatus": http_status, **{
+                                key: payload[key] for key in ("reportUrl", "reportUrlUnavailable") if key in payload
+                            }}
                     except Exception as error:
                         if node.id in contributors:
                             failed_analyzers.append(node.kind)
@@ -272,10 +333,12 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                             detail = f"Ошибка доставки, HTTP {status}" if status else "Ошибка доставки webhook."
                         elif node.kind == "condition" and isinstance(error, TimeoutError):
                             detail = "Превышено время проверки регулярного выражения."
-                        node_status(run, node, "error", detail)
+                        elif node.kind == "telegram":
+                            detail = str(error) if type(error) is ValueError else "Ошибка доставки Telegram."
+                        node_status(run, node, "error", detail, {"error": detail})
                         continue
                     enabled[node.id] = True
-                    node_status(run, node, "done", detail)
+                    node_status(run, node, "done", detail, output)
         except (ValueError, OSError):
             for node in ordered:
                 if node.kind == "source":
@@ -285,23 +348,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         status = "error" if not run.get("report") or any(
             item["status"] == "error" for item in run["nodes"].values()
         ) else "done"
-        selected = sorted(
-            node.kind for node in ordered if node.id in contributors
-            and run["nodes"][node.id]["status"] in {"done", "error"}
-        )
-        record = {
-            "id": run["id"], "status": status, "completedAt": datetime.now(timezone.utc).isoformat(),
-            "source": (graph.projectLabel or "Загруженный ZIP") if archive is not None else "Repair Desk",
-            "projectKey": ("upload:" + (graph.projectLabel.strip().casefold() if graph.projectLabel
-                                        else graph.uploadId)) if archive is not None else "builtin:repair-desk",
-            "analyzers": selected,
-            "comparable": bool(run.get("report")) and bool(selected) and not failed_analyzers,
-            "nodes": {node.id: {"kind": node.kind, **run["nodes"][node.id]} for node in ordered},
-            "report": run.get("report"),
-            "count": len(findings) if run.get("report") else None,
-        }
         try:
-            history.save(record)
+            history.save(record(status))
         except (DatabaseError, OSError):
             update(run, historyError="Локальная история недоступна. Скачайте отчёт до закрытия страницы.")
         update(run, status=status)
@@ -417,6 +465,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         reportComplete: bool = True
         failedAnalyzers: list[Literal["secret", "sca", "sast"]] = Field(default_factory=list, max_length=3)
         recommendations: list[dict] = Field(default_factory=list, max_length=3)
+        reportUrl: str | None = None
+        reportUrlUnavailable: str | None = None
 
     @router.post("/demo-webhook", status_code=202)
     def receive(payload: Delivery):

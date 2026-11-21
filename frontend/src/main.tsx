@@ -31,6 +31,7 @@ type RunSnapshot = {
   delivery?: {
     counts: Record<string, number>; maxSeverity: Severity | null
     reportComplete?: boolean; failedAnalyzers?: string[]
+    reportUrl?: string; reportUrlUnavailable?: string
   }
 }
 
@@ -86,6 +87,7 @@ function App() {
   const [run, setRun] = useState<RunSnapshot | null>(null)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [savedSource, setSavedSource] = useState('')
+  const [savedSummary, setSavedSummary] = useState<Summary | null>(null)
   const [activeFinding, setActiveFinding] = useState<Finding | null>(null)
 
   useEffect(() => {
@@ -101,11 +103,41 @@ function App() {
     if (savedSource) document.getElementById('results')?.scrollIntoView({ block: 'start' })
   }, [savedSource, report])
 
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('run')
+    if (!id) return
+    if (!/^[a-f0-9]{32}$/.test(id)) {
+      setError('Некорректная ссылка на отчёт.')
+      return
+    }
+    const controller = new AbortController()
+    setBusy(true)
+    async function load() {
+      try {
+        const saved = await readResponse(await fetch(`/api/workflow/history/${id}`, {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+        }))
+        if (controller.signal.aborted) return
+        if (!saved.report) throw new Error('У этого запуска нет сохранённого отчёта.')
+        setResult({ report: saved.report, signature: '' })
+        setSavedSource(saved.source)
+        setSavedSummary(saved.summary ?? null)
+      } catch (problem) {
+        if (!controller.signal.aborted) setError(problem instanceof Error ? problem.message : 'Не удалось открыть отчёт.')
+      } finally {
+        if (!controller.signal.aborted) setBusy(false)
+      }
+    }
+    void load()
+    return () => controller.abort()
+  }, [])
+
   function clearRun() {
     setRun(null)
     setResult(null)
     setError('')
     setSavedSource('')
+    setSavedSummary(null)
     setActiveFinding(null)
   }
 
@@ -187,12 +219,14 @@ function App() {
             {run.delivery.reportComplete === false && <> · Неполный отчёт · Сбой: {run.delivery.failedAnalyzers?.map(name => name.toUpperCase()).join(', ')}</>}
             {' · '}{Object.entries(run.delivery.counts).map(([category, count]) => `${category}: ${count}`).join(' · ')}
             {run.delivery.maxSeverity ? ` · ${run.delivery.maxSeverity}` : ''}
+            {run.delivery.reportUrl && <> · <a href={run.delivery.reportUrl}>Открыть сохранённый отчёт</a></>}
+            {run.delivery.reportUrlUnavailable && <> · {run.delivery.reportUrlUnavailable}</>}
           </p>}
           {error && <p className="workflow-error alert" role="alert">{error}</p>}
           {run?.historyError && <p className="workflow-error alert" role="alert">{run.historyError}</p>}
         </section>
         <section className="panel results" aria-labelledby="results" aria-busy={busy && !report}>
-          {result ? <ReportActions report={result.report} signature={result.signature} onDownload={downloadReport} workflowSummary={run?.summary} />
+          {result ? <ReportActions report={result.report} signature={result.signature} onDownload={downloadReport} workflowSummary={savedSummary ?? run?.summary} />
             : <div className="results-title"><h2 id="results">Результаты</h2></div>}
           {savedSource && <p className="history-context">Сохранённый отчёт · {savedSource}</p>}
           {!error && !report?.findings.length && <p className="empty">
@@ -216,11 +250,12 @@ function App() {
             })}</tbody>
           </table></div>}
         </section>
-        <History revision={historyRevision} disabled={busy} onOpen={(saved, source) => {
+        <History revision={historyRevision} disabled={busy} onOpen={(saved, source, summary) => {
           if (!saved || busy) return
           clearRun()
           setResult({ report: saved, signature: '' })
           setSavedSource(source)
+          setSavedSummary(summary ?? null)
         }} />
         <Quality />
         {activeFinding && <FindingCard finding={activeFinding} name={findingName(activeFinding)}

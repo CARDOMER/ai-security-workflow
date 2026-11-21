@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.quality import evaluate, read_reference
 
 from backend.sca_scanner import MavenScaScanner, ScaFinding
+from backend.schemes import make_scheme_router
 from backend.sast_scanner import KotlinSastScanner, SastFinding
 from backend.secrets_scanner import SecretFinding, SecretsScanner
 from backend.summary import (
@@ -147,3 +148,4 @@ def summarize_metadata(metadata: list[dict], provider: SummaryProvider | None) -
 
 
 app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata))
+app.include_router(make_scheme_router(Path(getenv("WORKFLOW_HISTORY_DB", str(ROOT.parents[1] / "workflow-history.sqlite3")))))

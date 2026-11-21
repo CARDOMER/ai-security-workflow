@@ -24,18 +24,21 @@ class RunHistory:
     def save(self, run: dict):
         with closing(self.connect()) as connection, connection:
             connection.execute(
-                "INSERT INTO workflow_runs (id, completed_at, payload) VALUES (?, ?, ?)",
+                """INSERT INTO workflow_runs (id, completed_at, payload) VALUES (?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET completed_at=excluded.completed_at, payload=excluded.payload
+                   WHERE json_extract(workflow_runs.payload, '$.status') = 'running'""",
                 (run["id"], run["completedAt"], json.dumps(run, ensure_ascii=False)),
             )
 
     def list(self):
         with closing(self.connect()) as connection:
             rows = connection.execute(
-                "SELECT payload FROM workflow_runs ORDER BY completed_at DESC, id DESC LIMIT 20"
+                """SELECT payload FROM workflow_runs WHERE json_extract(payload, '$.status') != 'running'
+                   ORDER BY completed_at DESC, id DESC LIMIT 20"""
             ).fetchall()
         return [
             {key: value for key, value in json.loads(row["payload"]).items()
-             if key not in {"report", "nodes"}}
+             if key not in {"report", "nodes", "summary"}}
             for row in rows
         ]
 
