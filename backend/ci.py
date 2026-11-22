@@ -1,8 +1,10 @@
-"""Run the graph executor against a fixed, authorized training fixture."""
+"""Run the security gate against a Kotlin/Gradle project or a training fixture."""
 
 import argparse
 from collections.abc import Callable
+from functools import partial
 import json
+from os import walk
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
@@ -29,11 +31,26 @@ def gate(snapshot: dict) -> tuple[int, str]:
 
 
 def run_training(scenario: str, directory: Path) -> dict:
+    return run_workflow(ROOT, directory, clean_fixture=scenario == "clean-training")
+
+
+def run_project(project: Path, directory: Path, *, checkout: Path | None = None) -> dict:
+    if checkout is not None and not project.resolve().is_relative_to(checkout.resolve()):
+        raise ValueError("The project directory must be inside the source checkout.")
+    if not (project / "build.gradle.kts").is_file():
+        raise ValueError("The project directory must contain build.gradle.kts.")
+    for folder, directories, files in walk(project):
+        if any((Path(folder) / name).is_symlink() for name in directories + files):
+            raise ValueError("Symbolic links are unsupported in the project tree.")
+    return run_workflow(project, directory)
+
+
+def run_workflow(project: Path, directory: Path, *, clean_fixture: bool = False) -> dict:
     history = directory / "history.sqlite3"
     app = FastAPI()
-    app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata, history))
+    app.include_router(make_workflow_router(project, ANALYZERS, summarize_metadata, history))
     with TestClient(app) as client:
-        if scenario == "clean-training":
+        if clean_fixture:
             archive = directory / "clean-training.zip"
             with ZipFile(archive, "w") as fixture:
                 fixture.writestr("build.gradle.kts", "dependencies {}\n")
@@ -58,7 +75,9 @@ def run_training(scenario: str, directory: Path) -> dict:
     raise TimeoutError("Security workflow timed out.")
 
 
-def run_gate(scenario: str, output: Path, runner: Callable = run_training) -> tuple[int, str]:
+def run_gate(scenario: str | Path, output: Path, runner: Callable | None = None) -> tuple[int, str]:
+    if runner is None:
+        runner = run_project if isinstance(scenario, Path) else run_training
     output.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory() as directory:
         try:
@@ -67,21 +86,34 @@ def run_gate(scenario: str, output: Path, runner: Callable = run_training) -> tu
             (output / "security-report.json").write_text(
                 json.dumps(snapshot.get("report") or {"findings": []}, ensure_ascii=False, indent=2), encoding="utf-8",
             )
-        except (TimeoutError, ValueError, KeyError, OSError, httpx.HTTPError) as error:
+        except ValueError as error:
+            code, reason = 2, str(error)
+            (output / "security-report.json").write_text('{"findings":[]}', encoding="utf-8")
+        except (TimeoutError, KeyError, OSError, httpx.HTTPError) as error:
             code, reason = 2, f"Security workflow could not finish ({type(error).__name__})."
             (output / "security-report.json").write_text('{"findings":[]}', encoding="utf-8")
     (output / "security-gate.json").write_text(
-        json.dumps({"scenario": scenario, "exitCode": code, "reason": reason}, indent=2), encoding="utf-8",
+        json.dumps({"scenario": "project" if isinstance(scenario, Path) else scenario,
+                    "exitCode": code, "reason": reason}, indent=2), encoding="utf-8",
     )
     return code, reason
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["clean-training", "repair-desk"])
+    parser.add_argument("scenario", nargs="?", choices=["clean-training", "repair-desk"])
+    parser.add_argument("--project", type=Path, help="Path to the project containing build.gradle.kts")
+    parser.add_argument("--checkout", type=Path, help="Restrict --project to this checkout")
     parser.add_argument("--output", type=Path, default=Path("ci-artifacts"))
     arguments = parser.parse_args()
-    code, reason = run_gate(arguments.scenario, arguments.output)
+    if (arguments.scenario is None) == (arguments.project is None):
+        parser.error("Specify either a training scenario or --project.")
+    if arguments.checkout is not None and arguments.project is None:
+        parser.error("--checkout requires --project.")
+    if arguments.project is None:
+        code, reason = run_gate(arguments.scenario, arguments.output)
+    else:
+        code, reason = run_gate(arguments.project, arguments.output, partial(run_project, checkout=arguments.checkout))
     print(reason)
     return code
 

@@ -69,7 +69,28 @@ npm.cmd --prefix frontend run build
 
 Вкладка **Actions → Security workflow** показывает прогоны на push и pull request. По умолчанию используется безопасный учебный образец `clean-training`. Ручной запуск с параметром `repair-desk` демонстрирует блокировку по CRITICAL. Оба сценария запускают тот же исполнитель графа с SECRET, SCA и SAST. Для использования в другом учебном пайплайне вызовите `python -m backend.ci clean-training` или `python -m backend.ci repair-desk` после установки зависимостей для тестов и подготовки набора.
 
-В разделе **Artifacts** скачайте `security-report-<сценарий>`. Внутри лежат JSON с находками и `security-gate.json` с причиной и кодом выхода. Код 0 означает полный отчёт без CRITICAL, 1 означает наличие CRITICAL, 2 означает неполный отчёт или сбой. CI проверяет фиксированные разрешённые учебные образцы.
+В разделе **Artifacts** скачайте `security-report-<сценарий>`. Внутри лежат JSON с находками и `security-gate.json` с причиной и кодом выхода. Код 0 означает полный отчёт без CRITICAL, 1 означает наличие CRITICAL, 2 означает неполный отчёт или сбой.
+
+Чтобы автоматически проверять код другого Kotlin/Gradle-репозитория, добавьте туда `.github/workflows/security.yml`:
+
+```yaml
+name: Project security
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: CARDOMER/ai-security-workflow/.github/workflows/security-workflow.yml@public-demo
+    with:
+      project-directory: .
+      scanner-ref: public-demo
+```
+
+Этот вызов требует, чтобы указанная версия workflow была опубликована и доступна вызывающему репозиторию. Для закрепления версии укажите один и тот же SHA коммита после `@` и в `scanner-ref`. Если `build.gradle.kts` лежит во вложенной папке, укажите путь к ней в `project-directory`. В репозитории сервиса аналогичный режим включается переменной GitHub Actions `SECURITY_PROJECT_DIRECTORY`. Ручные учебные прогоны остаются доступны.
+
+В режиме проекта задача проверяет рабочую копию ревизии, которую GitHub Actions подготовил для события push или pull request, и публикует `security-report-project`. Задача читает исходники и конфигурацию без запуска Gradle и без ключа LLM. Для блокировки слияния добавьте статус задачи `security-gate` из первого прогона в обязательные проверки целевой ветки. В существующем пайплайне сборки можно сделать задачу сборки зависимой от этого вызова через `needs: security`.
 
 ### История и сравнение
 
