@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from time import time
 from collections import Counter
 from contextlib import closing
 from pathlib import Path
@@ -59,6 +60,21 @@ class RunHistory:
                 (json.dumps(summary, ensure_ascii=False), run_id),
             )
             return cursor.rowcount == 1
+
+    def reserve_telegram_notification(self) -> bool:
+        now = time()
+        with closing(self.connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("CREATE TABLE IF NOT EXISTS telegram_attempts (started_at REAL NOT NULL)")
+            connection.execute("DELETE FROM telegram_attempts WHERE started_at <= ?", (now - 86400,))
+            minute, day = connection.execute(
+                "SELECT COUNT(CASE WHEN started_at > ? THEN 1 END), COUNT(*) FROM telegram_attempts",
+                (now - 60,),
+            ).fetchone()
+            if minute >= 5 or day >= 60:
+                return False
+            connection.execute("INSERT INTO telegram_attempts (started_at) VALUES (?)", (now,))
+            return True
 
 
 def finding_key(item: dict) -> tuple:

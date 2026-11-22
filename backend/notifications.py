@@ -1,3 +1,4 @@
+import json
 from os import getenv
 from urllib.parse import urlsplit, urlunsplit
 
@@ -31,7 +32,11 @@ def report_address(run_id: str):
     return None
 
 
-def send_telegram(payload: dict) -> int:
+def telegram_configured() -> bool:
+    return bool(getenv("TELEGRAM_BOT_TOKEN") and getenv("TELEGRAM_CHAT_ID"))
+
+
+def send_telegram(payload: dict, *, report: dict | None = None) -> int:
     token = getenv("TELEGRAM_BOT_TOKEN", "")
     chat = getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat:
@@ -44,15 +49,26 @@ def send_telegram(payload: dict) -> int:
         "Отчёт полный." if payload["reportComplete"] else "Отчёт неполный.",
         payload.get("reportUrl") or payload.get("reportUrlUnavailable", ""),
     ]
+    text = "\n".join(lines)
+    method = "sendMessage"
+    request = {"json": {"chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True}}}
+    if report is not None:
+        method = "sendDocument"
+        request = {
+            "data": {"chat_id": chat, "caption": text},
+            "files": {"document": ("repair-desk-report.json",
+                                   json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
+                                   "application/json")},
+        }
     try:
         response = httpx.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": "\n".join(lines), "link_preview_options": {"is_disabled": True}},
-            timeout=5,
-            follow_redirects=False,
+            f"https://api.telegram.org/bot{token}/{method}",
+            timeout=5, follow_redirects=False, **request,
         )
-        if response.is_success and response.json().get("ok") is True:
-            return response.status_code
+        if response.is_success:
+            acknowledgment = response.json()
+            if isinstance(acknowledgment, dict) and acknowledgment.get("ok") is True:
+                return response.status_code
     except (httpx.HTTPError, ValueError):
         pass
     raise ValueError("Telegram не подтвердил доставку.")

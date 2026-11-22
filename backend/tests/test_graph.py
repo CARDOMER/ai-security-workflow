@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.main import ANALYZERS, ROOT, summarize_metadata
-from backend.workflow import Step, Workflow, condition_matches, make_workflow_router, ordered_steps
+from backend.workflow import Step, Workflow, condition_matches, make_workflow_router, ordered_steps, scan_graph
 
 
 def graph(schedule=False):
@@ -239,6 +239,48 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(request["chat_id"], "test-chat")
         self.assertIn("SECRET: 5", request["text"])
         self.assertNotIn("src/main", request["text"])
+
+    def test_public_telegram_uses_saved_report_and_dedicated_chat(self):
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "WORKFLOW_PUBLIC_DEMO": "1", "WORKFLOW_PUBLIC_TELEGRAM": "1",
+            "TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "test-chat",
+            "WORKFLOW_UI_URL": "https://public-demo.example",
+        }):
+            app = FastAPI()
+            app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata,
+                                                    Path(directory) / "history.sqlite3"))
+            self.client = TestClient(app)
+            graph_data = scan_graph().model_dump(mode="json", exclude_none=True)
+
+            def deliver(url, *, data, files, **_options):
+                self.assertTrue(url.endswith("/sendDocument"))
+                self.assertEqual(data["chat_id"], "test-chat")
+                link = data["caption"].splitlines()[-1]
+                self.assertTrue(link.startswith("https://public-demo.example/?run="))
+                run_id = link.split("=", 1)[1].split("#", 1)[0]
+                saved = self.client.get(f"/api/workflow/history/{run_id}").json()
+                self.assertEqual(saved["status"], "done")
+                self.assertEqual(saved["count"], 15)
+                self.assertEqual(json.loads(files["document"][1]), saved["report"])
+                return httpx.Response(200, json={"ok": True})
+
+            with patch("backend.notifications.httpx.post", side_effect=deliver) as sender:
+                for _ in range(5):
+                    result = self.wait(self.start(graph_data))
+                    self.assertEqual(result["telegramDelivery"], {"status": "delivered", "httpStatus": 200})
+                limited = self.wait(self.start(graph_data))
+                self.assertEqual(limited["status"], "done")
+                self.assertEqual(limited["telegramDelivery"], {"status": "rate_limited"})
+                self.assertEqual(sender.call_count, 5)
+
+            with (
+                patch("backend.workflow.RunHistory.reserve_telegram_notification", return_value=True),
+                patch("backend.notifications.httpx.post", side_effect=httpx.ConnectError("offline")),
+            ):
+                failed = self.wait(self.start(graph_data))
+                self.assertEqual(failed["status"], "done")
+                self.assertEqual(len(failed["report"]["findings"]), 15)
+                self.assertEqual(failed["telegramDelivery"], {"status": "failed"})
 
     def test_report_available_during_ai_and_webhook_failure(self):
         entered = Event()

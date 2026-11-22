@@ -20,7 +20,9 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.archive import MAX_UPLOAD, training_zip
 from backend.history import RunHistory, compare_runs
-from backend.notifications import DEMO_WEBHOOK_HEADER, is_local_demo_webhook, report_address, send_telegram
+from backend.notifications import (
+    DEMO_WEBHOOK_HEADER, is_local_demo_webhook, report_address, send_telegram, telegram_configured,
+)
 from backend.summary import SEVERITY_ORDER, get_summary_provider, report_metadata, sign_metadata
 
 
@@ -199,7 +201,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             run["nodes"][node.id] = {**previous, **state, **({"output": output} if output is not None else {})}
             run["events"].append({"nodeId": node.id, **state})
 
-    def execute(graph, ordered, inbound, run, archive, provider):
+    def execute(graph, ordered, inbound, run, archive, provider, notify_telegram):
         enabled = {}
         results = {}
         branches = {}
@@ -234,6 +236,15 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             except (DatabaseError, OSError):
                 return {"reportUrlUnavailable": "История недоступна. Ссылку на сохранённый отчёт создать не удалось."}
             return {"reportUrl": address}
+
+        def notification_payload():
+            return {
+                "runId": run["id"],
+                "counts": dict(Counter(item.category for item in findings)),
+                "maxSeverity": min((item.severity for item in findings), key=SEVERITY_ORDER.__getitem__, default=None),
+                "reportComplete": not failed_analyzers,
+                "failedAnalyzers": sorted(failed_analyzers),
+            }
 
         update(run, status="running")
         try:
@@ -303,14 +314,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                         elif node.kind in {"webhook", "telegram"}:
                             if node.kind == "telegram" and public_demo:
                                 raise ValueError("Telegram доступен только в локальном режиме.")
-                            payload = {
-                                "runId": run["id"],
-                                "counts": dict(Counter(item.category for item in findings)),
-                                "maxSeverity": min((item.severity for item in findings), key=SEVERITY_ORDER.__getitem__, default=None),
-                                "reportComplete": not failed_analyzers,
-                                "failedAnalyzers": sorted(failed_analyzers),
-                                **report_link(),
-                            }
+                            payload = {**notification_payload(), **report_link()}
                             if summary is not None:
                                 payload["recommendations"] = summary["priorities"]
                             if node.kind == "webhook":
@@ -361,6 +365,20 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             history.save(record(status))
         except (DatabaseError, OSError):
             update(run, historyError="Локальная история недоступна. Скачайте отчёт до закрытия страницы.")
+        else:
+            if notify_telegram and run.get("report"):
+                address = report_address(run["id"])
+                if address and address.startswith("https://"):
+                    try:
+                        if history.reserve_telegram_notification():
+                            http_status = send_telegram(
+                                {**notification_payload(), "reportUrl": address}, report=run["report"],
+                            )
+                            update(run, telegramDelivery={"status": "delivered", "httpStatus": http_status})
+                        else:
+                            update(run, telegramDelivery={"status": "rate_limited"})
+                    except (ValueError, DatabaseError, OSError):
+                        update(run, telegramDelivery={"status": "failed"})
         update(run, status=status)
 
     def start(graph: Workflow, *, wait=False):
@@ -400,7 +418,11 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             if delay:
                 scheduled = run["id"]
         provider = None if public_demo else get_summary_provider()
-        args = (graph, ordered, inbound, run, archive, provider)
+        notify_telegram = (
+            public_demo and not wait and graph.trigger == "manual" and archive is None
+            and getenv("WORKFLOW_PUBLIC_TELEGRAM") == "1" and telegram_configured()
+        )
+        args = (graph, ordered, inbound, run, archive, provider, notify_telegram)
         if wait:
             execute(*args)
             if run["status"] != "done" or run.get("historyError"):
