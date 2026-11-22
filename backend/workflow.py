@@ -216,6 +216,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         failed_analyzers: list[str] = []
         visitor_upload = public_demo and archive is not None and graph.uploadId not in demo_archives
         comparison_label = None if visitor_upload else graph.projectLabel
+        source = (graph.projectLabel or "Загруженный ZIP") if archive is not None else "Repair Desk"
 
         def record(status):
             selected = sorted(
@@ -224,7 +225,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             )
             return {
                 "id": run["id"], "status": status, "completedAt": datetime.now(timezone.utc).isoformat(),
-                "source": (graph.projectLabel or "Загруженный ZIP") if archive is not None else "Repair Desk",
+                "source": source,
                 "projectKey": ("upload:" + (comparison_label.strip().casefold() if comparison_label
                                             else graph.uploadId)) if archive is not None else "builtin:repair-desk",
                 **({"unlisted": True} if visitor_upload else {}),
@@ -382,7 +383,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                     try:
                         if history.reserve_telegram_notification():
                             http_status = send_telegram(
-                                {**notification_payload(), "reportUrl": address}, report=run["report"],
+                                {**notification_payload(), "reportUrl": address, "source": source},
+                                report=run["report"],
                             )
                             update(run, telegramDelivery={"status": "delivered", "httpStatus": http_status})
                         else:
@@ -430,7 +432,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                 scheduled = run["id"]
         provider = None if public_demo else get_summary_provider()
         notify_telegram = (
-            public_demo and not wait and graph.trigger == "manual" and archive is None
+            public_demo and not wait and (archive is not None or graph.trigger == "manual")
             and getenv("WORKFLOW_PUBLIC_TELEGRAM") == "1" and telegram_configured()
         )
         args = (graph, ordered, inbound, run, archive, provider, notify_telegram)

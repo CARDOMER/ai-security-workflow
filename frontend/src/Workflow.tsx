@@ -287,6 +287,7 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
     {draftMessage && <p className="workflow-error" role="status">{draftMessage}</p>}
     <div className="workflow-options">
       <label><input type="checkbox" checked={authorized} disabled={locked}
+        aria-describedby={publicDemo ? 'zip-notice' : undefined}
         onChange={event => setAuthorized(event.target.checked)} />Разрешённый учебный проект</label>
       <label>Загрузить ZIP <input type="file" accept=".zip,application/zip" disabled={locked || !authorized}
         onChange={event => { const file = event.target.files?.[0]; if (file) void sendArchive(file); event.target.value = '' }} /></label>
@@ -301,6 +302,9 @@ export function Workflow({ theme, busy, progress, events, onRun, onEdit }: Props
           onChange={event => { setProjectLabel(event.target.value); onEdit() }} />
       </label>}
     </div>
+    {publicDemo && <p id="zip-notice" className="workflow-error">
+      При включённых уведомлениях JSON с результатами и ссылка на отчёт отправляются владельцу сервиса в Telegram.
+    </p>}
     {publicDemo && <div className="workflow-options demo-downloads">
       <span>Архивы Demo Desk для сравнения</span>
       <a href="/demo/check-before.zip" download>Скачать ZIP до исправлений</a>

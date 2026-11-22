@@ -49,6 +49,8 @@ def send_telegram(payload: dict, *, report: dict | None = None) -> int:
         "Отчёт полный." if payload["reportComplete"] else "Отчёт неполный.",
         payload.get("reportUrl") or payload.get("reportUrlUnavailable", ""),
     ]
+    if payload.get("source"):
+        lines.insert(1, f"Проект: {payload['source']}")
     text = "\n".join(lines)
     method = "sendMessage"
     request = {"json": {"chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True}}}
@@ -56,7 +58,7 @@ def send_telegram(payload: dict, *, report: dict | None = None) -> int:
         method = "sendDocument"
         request = {
             "data": {"chat_id": chat, "caption": text},
-            "files": {"document": ("repair-desk-report.json",
+            "files": {"document": ("security-report.json",
                                    json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
                                    "application/json")},
         }

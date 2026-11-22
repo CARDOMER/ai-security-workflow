@@ -113,7 +113,11 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(result.status_code, 422)
 
     def test_visitor_archive_is_scanned_and_unlisted_in_public_demo(self):
-        with TemporaryDirectory() as directory, patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1"}):
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "WORKFLOW_PUBLIC_DEMO": "1", "WORKFLOW_PUBLIC_TELEGRAM": "1",
+            "TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "test-chat",
+            "WORKFLOW_UI_URL": "https://public-demo.example",
+        }):
             app = FastAPI()
             app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata,
                                                     Path(directory) / "history.sqlite3"))
@@ -128,12 +132,19 @@ class GraphTests(unittest.TestCase):
             imported = self.client.post("/api/workflow/uploads", content=raw.getvalue(), headers=request)
             self.assertEqual(imported.status_code, 201, imported.text)
             payload = scan_graph(imported.json()["uploadId"]).model_dump(mode="json", exclude_none=True)
-            run = self.start(payload)
-            result = self.wait(run)
+            with patch("backend.notifications.httpx.post", return_value=httpx.Response(200, json={"ok": True})) as send:
+                run = self.start(payload)
+                result = self.wait(run)
+            send.assert_called_once()
+            message = send.call_args.kwargs
+            self.assertEqual(message["data"]["chat_id"], "test-chat")
+            self.assertIn("Проект: Загруженный учебный ZIP", message["data"]["caption"])
+            self.assertIn(f"https://public-demo.example/?run={run}#results", message["data"]["caption"])
+            self.assertEqual(json.loads(message["files"]["document"][1]), result["report"])
             self.assertEqual(result["status"], "done")
             self.assertEqual(len(result["report"]["findings"]), 1)
             self.assertNotIn("synthetic-commission-fixture", json.dumps(result["report"]))
-            self.assertNotIn("telegramDelivery", result)
+            self.assertEqual(result["telegramDelivery"], {"status": "delivered", "httpStatus": 200})
             with TestClient(app) as another_browser:
                 saved = another_browser.get(f"/api/workflow/history/{run}").json()
                 self.assertEqual(saved["report"], result["report"])
