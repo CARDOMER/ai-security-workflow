@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import ConfigDict, Field
 
+from backend.history import RunHistory
 from backend.summary import GigaChatRequestError, get_summary_provider
 from backend.workflow import Input, Link, Step, Workflow, ordered_steps
 
@@ -130,6 +131,12 @@ def explicit_analyzers(prompt: str) -> list[str]:
 
 def make_scheme_router(database: Path):
     router = APIRouter(prefix="/api/workflow")
+    history = RunHistory(database)
+
+    def generation_provider():
+        if getenv("WORKFLOW_PUBLIC_DEMO") == "1" and getenv("WORKFLOW_PUBLIC_LLM") != "1":
+            return None
+        return get_summary_provider()
 
     def connect():
         connection = sqlite3.connect(database, timeout=5)
@@ -160,11 +167,22 @@ def make_scheme_router(database: Path):
             raise HTTPException(503, "Не удалось сохранить шаблон.") from None
         return entry
 
+    @router.get("/generate")
+    def generation_status():
+        return {"available": generation_provider() is not None}
+
     @router.post("/generate")
     def generate(request: Prompt):
-        provider = None if getenv("WORKFLOW_PUBLIC_DEMO") == "1" else get_summary_provider()
+        provider = generation_provider()
         if provider is None:
-            raise HTTPException(503, "AI-генерация доступна в локальной версии с настроенной LLM.")
+            raise HTTPException(503, "Генерация схем временно недоступна. На сервере должна быть включена и настроена LLM.")
+        if getenv("WORKFLOW_PUBLIC_DEMO") == "1":
+            try:
+                reserved = history.reserve_scheme_generation()
+            except sqlite3.Error:
+                raise HTTPException(503, "Генерация схем временно недоступна.") from None
+            if not reserved:
+                raise HTTPException(429, "Достигнут общий лимит генерации схем. Попробуйте позже.")
         now = datetime.now(timezone.utc)
         requested = explicit_analyzers(request.prompt)
         messages = [

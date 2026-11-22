@@ -19,6 +19,8 @@ export function SchemeTools({ publicDemo, locked, getDraft, onApply, onBusy }: {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
+  const [generationStatusError, setGenerationStatusError] = useState(false)
   const [templates, setTemplates] = useState<Template[] | null>(null)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -70,9 +72,18 @@ export function SchemeTools({ publicDemo, locked, getDraft, onApply, onBusy }: {
         }}>Скопировать в редактор</button>
       </li>)}</ul>}
     </details>
-    <details>
+    <details onToggle={event => {
+      if (!event.currentTarget.open || !publicDemo) return
+      setGenerationAvailable(null)
+      setGenerationStatusError(false)
+      void request<{ available: boolean }>('/api/workflow/generate')
+        .then(data => setGenerationAvailable(data.available))
+        .catch(() => setGenerationStatusError(true))
+    }}>
       <summary>Создать схему по описанию</summary>
-      {publicDemo ? <p>AI-генерация доступна в локальной версии с настроенной LLM.</p> :
+      {publicDemo && generationStatusError ? <p>Не удалось проверить доступность. Закройте и откройте раздел снова.</p> :
+        publicDemo && generationAvailable === null ? <p role="status">Проверяем доступность генерации…</p> :
+        publicDemo && !generationAvailable ? <p>Генерация схем сейчас недоступна.</p> :
         <form onSubmit={event => {
           event.preventDefault()
           void perform(async () => {

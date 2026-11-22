@@ -62,9 +62,27 @@ class SchemeTests(unittest.TestCase):
             self.assertIn({"source": "condition", "target": "ai", "branch": "yes"}, result.json()["edges"])
             invalid = self.client.post("/api/workflow/generate", json={"prompt": "Проверь учебный проект."})
             self.assertEqual(invalid.status_code, 422)
-        with patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1"}):
+        with patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1", "WORKFLOW_PUBLIC_LLM": "0"}):
             unavailable = self.client.post("/api/workflow/generate", json={"prompt": "Проверь учебный проект."})
             self.assertEqual(unavailable.status_code, 503)
+
+    def test_public_generation_uses_server_provider_and_shared_limit(self):
+        provider = Mock()
+        provider.complete.return_value = json.dumps({
+            "supported": True, "trigger": "manual", "analyzers": ["sca"], "ai": False, "webhook": False,
+        })
+        with (
+            patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1", "WORKFLOW_PUBLIC_LLM": "1"}),
+            patch("backend.schemes.get_summary_provider", return_value=provider),
+        ):
+            url = "/api/workflow/generate"
+            self.assertEqual(self.client.get(url).json(), {"available": True})
+            for _ in range(5):
+                response = self.client.post(url, json={"prompt": "Проверь учебный проект."})
+                self.assertEqual(response.status_code, 200, response.text)
+            with TestClient(self.app) as visitor:
+                self.assertEqual(visitor.post(url, json={"prompt": "Проверь учебный проект."}).status_code, 429)
+            self.assertEqual(provider.complete.call_count, 5)
 
     def test_generated_schedule_needs_a_valid_time(self):
         provider = Mock()

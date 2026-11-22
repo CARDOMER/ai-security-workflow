@@ -4,6 +4,7 @@ from time import time
 from collections import Counter
 from contextlib import closing
 from pathlib import Path
+from typing import Literal
 
 
 class RunHistory:
@@ -63,18 +64,24 @@ class RunHistory:
             return cursor.rowcount == 1
 
     def reserve_telegram_notification(self) -> bool:
+        return self._reserve_public_attempt("telegram_attempts")
+
+    def reserve_scheme_generation(self) -> bool:
+        return self._reserve_public_attempt("scheme_generation_attempts")
+
+    def _reserve_public_attempt(self, table: Literal["telegram_attempts", "scheme_generation_attempts"]) -> bool:
         now = time()
         with closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute("CREATE TABLE IF NOT EXISTS telegram_attempts (started_at REAL NOT NULL)")
-            connection.execute("DELETE FROM telegram_attempts WHERE started_at <= ?", (now - 86400,))
+            connection.execute(f"CREATE TABLE IF NOT EXISTS {table} (started_at REAL NOT NULL)")
+            connection.execute(f"DELETE FROM {table} WHERE started_at <= ?", (now - 86400,))
             minute, day = connection.execute(
-                "SELECT COUNT(CASE WHEN started_at > ? THEN 1 END), COUNT(*) FROM telegram_attempts",
+                f"SELECT COUNT(CASE WHEN started_at > ? THEN 1 END), COUNT(*) FROM {table}",
                 (now - 60,),
             ).fetchone()
             if minute >= 5 or day >= 60:
                 return False
-            connection.execute("INSERT INTO telegram_attempts (started_at) VALUES (?)", (now,))
+            connection.execute(f"INSERT INTO {table} (started_at) VALUES (?)", (now,))
             return True
 
 
