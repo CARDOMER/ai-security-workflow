@@ -7,7 +7,7 @@ from os import getenv
 from pathlib import Path
 from secrets import token_urlsafe
 from sqlite3 import Error as DatabaseError
-from threading import Lock, Thread, Timer
+from threading import BoundedSemaphore, Lock, Thread, Timer
 from time import monotonic
 from typing import Literal
 from uuid import uuid4
@@ -145,6 +145,7 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     lock = Lock()
     runs = OrderedDict()
     uploads = OrderedDict()
+    upload_validation = BoundedSemaphore(2)
     webhook_secret = token_urlsafe(32)
     scheduled = None
     public_demo = getenv("WORKFLOW_PUBLIC_DEMO") == "1"
@@ -171,18 +172,21 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         archive = bytes(data)
         if public_demo:
             project = sha256(archive).hexdigest()[:32]
-            if demo_archives.get(project) != archive:
-                raise HTTPException(422, "В публичном демо доступны только два учебных ZIP из комплекта.")
-            return {"uploadId": project}
+            if demo_archives.get(project) == archive:
+                return {"uploadId": project}
 
         def validate():
             with training_zip(archive):
                 pass
 
+        if not upload_validation.acquire(blocking=False):
+            raise HTTPException(429, "Сервис проверяет другие архивы. Повторите загрузку через несколько секунд.")
         try:
             await run_in_threadpool(validate)
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
+        finally:
+            upload_validation.release()
         project = uuid4().hex
         with lock:
             uploads[project] = archive
@@ -210,6 +214,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
         merge = next(node for node in ordered if node.kind == "merge")
         contributors = {edge.source for edge in inbound[merge.id]}
         failed_analyzers: list[str] = []
+        visitor_upload = public_demo and archive is not None and graph.uploadId not in demo_archives
+        comparison_label = None if visitor_upload else graph.projectLabel
 
         def record(status):
             selected = sorted(
@@ -219,8 +225,9 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
             return {
                 "id": run["id"], "status": status, "completedAt": datetime.now(timezone.utc).isoformat(),
                 "source": (graph.projectLabel or "Загруженный ZIP") if archive is not None else "Repair Desk",
-                "projectKey": ("upload:" + (graph.projectLabel.strip().casefold() if graph.projectLabel
+                "projectKey": ("upload:" + (comparison_label.strip().casefold() if comparison_label
                                             else graph.uploadId)) if archive is not None else "builtin:repair-desk",
+                **({"unlisted": True} if visitor_upload else {}),
                 "analyzers": selected,
                 "comparable": bool(run.get("report")) and bool(selected) and not failed_analyzers,
                 "nodes": {node.id: {"kind": node.kind, **run["nodes"][node.id]} for node in ordered},
@@ -320,6 +327,9 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
                             if node.kind == "webhook":
                                 destination = getenv("WORKFLOW_WEBHOOK_URL", "http://127.0.0.1:8000/api/workflow/demo-webhook")
                                 internal = is_local_demo_webhook(destination)
+                                if visitor_upload and not internal:
+                                    node_status(run, node, "skipped", "Для загруженного ZIP доступен внутренний вебхук.")
+                                    continue
                                 response = httpx.post(
                                     destination,
                                     json=payload, timeout=5, follow_redirects=False,
@@ -384,7 +394,8 @@ def make_workflow_router(root, analyzers, summarize, history_path=None):
     def start(graph: Workflow, *, wait=False):
         nonlocal scheduled
         if public_demo and graph.uploadId:
-            graph = graph.model_copy(update={"projectLabel": "Demo Desk"})
+            label = "Demo Desk" if graph.uploadId in demo_archives else "Загруженный учебный ZIP"
+            graph = graph.model_copy(update={"projectLabel": label})
         try:
             ordered, inbound = ordered_steps(graph)
         except ValueError as error:

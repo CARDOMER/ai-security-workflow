@@ -59,6 +59,7 @@ export function ReportActions({ report, signature, runId, busy, onDownload, work
         <h2 id="results">Результаты <span className="count">{report.findings.length}</span></h2>
         <div className="report-buttons">
           <button className="secondary" type="button" onClick={onDownload}>Скачать JSON</button>
+          {runId && !busy && <a href={`/?run=${encodeURIComponent(runId)}#results`}>Ссылка на отчёт</a>}
           {!!report.findings.length && (signature || runId) && (
             <button className="secondary" type="button" onClick={prepare} disabled={pending || busy}>
               Подготовить рекомендации

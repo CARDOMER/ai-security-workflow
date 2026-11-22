@@ -112,6 +112,34 @@ class GraphTests(unittest.TestCase):
                                           headers={"X-Training-Project": "authorized"})
                 self.assertEqual(result.status_code, 422)
 
+    def test_visitor_archive_is_scanned_and_unlisted_in_public_demo(self):
+        with TemporaryDirectory() as directory, patch.dict("os.environ", {"WORKFLOW_PUBLIC_DEMO": "1"}):
+            app = FastAPI()
+            app.include_router(make_workflow_router(ROOT, ANALYZERS, summarize_metadata,
+                                                    Path(directory) / "history.sqlite3"))
+            self.client = TestClient(app)
+            request = {"X-Training-Project": "authorized"}
+            raw = BytesIO()
+            with ZipFile(raw, "w") as archive:
+                archive.writestr("commission/build.gradle.kts", "plugins {}")
+                archive.writestr("commission/example.properties", "api-key=synthetic-commission-fixture")
+            denied = self.client.post("/api/workflow/uploads", content=raw.getvalue())
+            self.assertEqual(denied.status_code, 403)
+            imported = self.client.post("/api/workflow/uploads", content=raw.getvalue(), headers=request)
+            self.assertEqual(imported.status_code, 201, imported.text)
+            payload = scan_graph(imported.json()["uploadId"]).model_dump(mode="json", exclude_none=True)
+            run = self.start(payload)
+            result = self.wait(run)
+            self.assertEqual(result["status"], "done")
+            self.assertEqual(len(result["report"]["findings"]), 1)
+            self.assertNotIn("synthetic-commission-fixture", json.dumps(result["report"]))
+            self.assertNotIn("telegramDelivery", result)
+            with TestClient(app) as another_browser:
+                saved = another_browser.get(f"/api/workflow/history/{run}").json()
+                self.assertEqual(saved["report"], result["report"])
+                self.assertEqual(saved["source"], "Загруженный учебный ZIP")
+                self.assertNotIn(run, {item["id"] for item in another_browser.get("/api/workflow/history").json()})
+
     def test_graph_validation(self):
         value = graph()
         value["edges"].append({"source": "report", "target": "source"})

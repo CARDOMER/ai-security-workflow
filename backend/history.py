@@ -35,6 +35,7 @@ class RunHistory:
         with closing(self.connect()) as connection:
             rows = connection.execute(
                 """SELECT payload FROM workflow_runs WHERE json_extract(payload, '$.status') != 'running'
+                   AND COALESCE(json_extract(payload, '$.unlisted'), 0) = 0
                    ORDER BY completed_at DESC, id DESC LIMIT 20"""
             ).fetchall()
         return [
